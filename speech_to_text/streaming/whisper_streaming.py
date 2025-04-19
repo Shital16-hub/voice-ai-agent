@@ -1,7 +1,6 @@
 """
 Streaming wrapper for Whisper.cpp using pywhispercpp.
 """
-
 import time
 import asyncio
 import numpy as np
@@ -76,18 +75,26 @@ class StreamingWhisperASR:
             min_silence_ms=min_silence_ms,
             max_chunk_size_ms=max_chunk_size_ms,
         )
-
-        # Initialize the Whisper model using pywhispercpp
-        self.model = Model('base.en', print_realtime=False, print_progress=False)
-        # self.model.params.n_threads = n_threads
         
-        # Set language
-        # if language != "auto":
-        #     self.model.set_language(language)
+        # Initialize the Whisper model using pywhispercpp
+        try:
+            logger.info(f"Loading model: {model_path}")
+            # Try to load the model directly - using the simplest form
+            self.model = Model(model_path)
+            logger.info(f"Successfully loaded model")
+        except Exception as e:
+            logger.error(f"Error loading model from {model_path}: {e}")
+            logger.info("Falling back to base.en model")
+            # Fall back to base.en model with minimal options
+            self.model = Model("base.en")
         
         # Set translation if needed
         if translate:
-            self.model.set_translate(True)
+            try:
+                self.model.set_translate(True)
+                logger.info("Translation enabled")
+            except Exception as e:
+                logger.warning(f"Could not enable translation: {e}")
         
         # Tracking state
         self.is_streaming = False
@@ -187,42 +194,49 @@ class StreamingWhisperASR:
         # Process the chunk with Whisper
         start_time = time.time()
         
-        # Run in a separate thread to avoid blocking the event loop
-        loop = asyncio.get_event_loop()
-        segments = await loop.run_in_executor(
-            self.executor, 
-            lambda: self.model.transcribe(chunk)
-        )
-        
-        processing_time = time.time() - start_time
-        
-        logger.debug(f"Processed chunk {chunk_id} in {processing_time:.3f}s")
-        
-        # Handle transcription results
-        if not segments:
+        try:
+            # Run in a separate thread to avoid blocking the event loop
+            loop = asyncio.get_event_loop()
+            segments = await loop.run_in_executor(
+                self.executor, 
+                lambda: self.model.transcribe(chunk)
+            )
+            
+            processing_time = time.time() - start_time
+            
+            logger.debug(f"Processed chunk {chunk_id} in {processing_time:.3f}s")
+            
+            # Handle transcription results
+            if not segments:
+                return None
+            
+            # Combine results from all segments
+            combined_text = " ".join(segment.text for segment in segments)
+            
+            # Create streaming result
+            result = StreamingTranscriptionResult(
+                text=combined_text,
+                is_final=True,  # For now, all results are final
+                confidence=1.0,  # pywhispercpp doesn't provide confidence values
+                start_time=metadata.start_time,
+                end_time=metadata.end_time,
+                chunk_id=chunk_id,
+            )
+            
+            # Update partial text
+            self.partial_text += " " + combined_text if combined_text else ""
+            
+            # Call the callback if provided
+            if callback and combined_text.strip():
+                await callback(result)
+            
+            return result if combined_text.strip() else None
+            
+        except Exception as e:
+            logger.error(f"Error in transcription for chunk {chunk_id}: {e}")
+            processing_time = time.time() - start_time
+            logger.debug(f"Failed chunk {chunk_id} after {processing_time:.3f}s")
             return None
-        
-        # Combine results from all segments
-        combined_text = " ".join(segment.text for segment in segments)
-        
-        # Create streaming result
-        result = StreamingTranscriptionResult(
-            text=combined_text,
-            is_final=True,  # For now, all results are final
-            confidence=1.0,  # pywhispercpp doesn't provide confidence values
-            start_time=metadata.start_time,
-            end_time=metadata.end_time,
-            chunk_id=chunk_id,
-        )
-        
-        # Update partial text
-        self.partial_text += " " + combined_text if combined_text else ""
-        
-        # Call the callback if provided
-        if callback and combined_text.strip():
-            await callback(result)
-        
-        return result if combined_text.strip() else None
     
     def _detect_speech(self, audio: np.ndarray, threshold: float = 0.3) -> bool:
         """
@@ -275,4 +289,5 @@ class StreamingWhisperASR:
 
     def __del__(self):
         """Clean up resources."""
-        self.executor.shutdown(wait=False)
+        if hasattr(self, 'executor'):
+            self.executor.shutdown(wait=False)

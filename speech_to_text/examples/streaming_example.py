@@ -2,7 +2,6 @@
 """
 Example script for streaming speech recognition using Whisper.cpp.
 """
-
 import os
 import sys
 import time
@@ -14,7 +13,6 @@ from pathlib import Path
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
 from speech_to_text.streaming.whisper_streaming import StreamingWhisperASR
 from speech_to_text.utils.audio_utils import load_audio_file
 
@@ -95,7 +93,7 @@ async def main():
     """Main function."""
     parser = argparse.ArgumentParser(description='Streaming speech recognition example')
     parser.add_argument('--model', type=str, required=True,
-                      help='Path to Whisper model file')
+                      help='Model name or path to model file')
     parser.add_argument('--audio', type=str, required=True,
                       help='Path to audio file')
     parser.add_argument('--chunk-size', type=int, default=1000,
@@ -110,12 +108,19 @@ async def main():
                       help='Enable voice activity detection')
     parser.add_argument('--translate', action='store_true',
                       help='Enable translation to English')
+    parser.add_argument('--debug', action='store_true',
+                      help='Enable debug logging')
     
     args = parser.parse_args()
     
+    # Set debug logging if requested
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.debug("Debug logging enabled")
+    
     # Validate inputs
-    if not os.path.isfile(args.model):
-        logger.error(f"Model file not found: {args.model}")
+    if os.path.exists(args.model) and not os.path.isfile(args.model):
+        logger.error(f"Model path exists but is not a file: {args.model}")
         return 1
     
     if not os.path.isfile(args.audio):
@@ -128,6 +133,7 @@ async def main():
     
     try:
         # Create ASR instance
+        logger.info(f"Creating StreamingWhisperASR instance with {args.threads} threads")
         asr = StreamingWhisperASR(
             model_path=args.model,
             language=args.language,
@@ -155,10 +161,13 @@ async def main():
         
     except Exception as e:
         logger.error(f"Error during processing: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return 1
 
 if __name__ == "__main__":
     try:
+        print("Starting streaming speech recognition...")
         exit_code = asyncio.run(main())
         sys.exit(exit_code)
     except KeyboardInterrupt:
