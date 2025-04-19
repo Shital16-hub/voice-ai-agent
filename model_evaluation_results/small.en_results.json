@@ -1,0 +1,25 @@
+{
+  "model": "small.en",
+  "parameters": {
+    "temperature": 0.2,
+    "initial_prompt": "Customer service conversation transcript:",
+    "max_tokens": 150,
+    "no_context": false,
+    "single_segment": true
+  },
+  "overall_latency_ms": 26.727676391601562,
+  "memory_usage_mb": 484.73828125,
+  "audio_duration_seconds": 11.0,
+  "realtime_factor": 0.0024297887628728695,
+  "files": [
+    {
+      "file_name": "sample.wav",
+      "processing_time_seconds": 0.026727676391601562,
+      "audio_duration_seconds": 11.0,
+      "transcript": "",
+      "wer": null,
+      "realtime_factor": 0.0024297887628728695
+    }
+  ],
+  "model_load_time_ms": 100895.38955688477
+}

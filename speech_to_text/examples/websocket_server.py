@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from speech_to_text.streaming.whisper_streaming import StreamingWhisperASR, StreamingTranscriptionResult
+from speech_to_text.streaming.whisper_streaming import StreamingWhisperASR, StreamingTranscriptionResult, PARAMETER_PRESETS
 from speech_to_text.utils.audio_utils import audio_bytes_to_array
 
 # Set up logging
@@ -55,7 +55,14 @@ settings = {
     "language": "en",
     "n_threads": 4,
     "sample_rate": 16000,
-    "chunk_size_ms": 1000
+    "chunk_size_ms": 1000,
+    # Add new parameters with default values
+    "temperature": 0.0,
+    "initial_prompt": None,
+    "max_tokens": 0,
+    "no_context": False,
+    "single_segment": True,
+    "preset": None
 }
 
 # Active clients
@@ -65,6 +72,13 @@ class TranscriptionRequest(BaseModel):
     """Request for transcription configuration."""
     language: str = Field(default="en", description="Language code")
     sample_rate: int = Field(default=16000, description="Audio sample rate in Hz")
+    # Add new fields for advanced parameters
+    temperature: Optional[float] = Field(default=None, description="Controls creativity in transcription (higher = more creative)")
+    initial_prompt: Optional[str] = Field(default=None, description="Provides context to guide the transcription")
+    max_tokens: Optional[int] = Field(default=None, description="Limits the number of tokens per segment")
+    no_context: Optional[bool] = Field(default=None, description="Controls whether to use previous transcription as context")
+    single_segment: Optional[bool] = Field(default=None, description="Enabled for better streaming performance")
+    preset: Optional[str] = Field(default=None, description="Parameter preset to use")
 
 @app.on_event("startup")
 async def startup_event():
@@ -79,6 +93,9 @@ async def startup_event():
     logger.info(f"Using model: {settings['model_path']}")
     logger.info(f"Default language: {settings['language']}")
     logger.info(f"Using {settings['n_threads']} CPU threads")
+    
+    # Log available parameter presets
+    logger.info(f"Available parameter presets: {list(PARAMETER_PRESETS.keys())}")
 
 @app.websocket("/ws/transcribe")
 async def transcribe_audio(websocket: WebSocket):
@@ -102,6 +119,21 @@ async def transcribe_audio(websocket: WebSocket):
         
         logger.info(f"Client {client_id} connected with config: {config}")
         
+        # Build parameters dictionary with only provided values
+        params = {}
+        if config.temperature is not None:
+            params['temperature'] = config.temperature
+        if config.initial_prompt is not None:
+            params['initial_prompt'] = config.initial_prompt
+        if config.max_tokens is not None:
+            params['max_tokens'] = config.max_tokens
+        if config.no_context is not None:
+            params['no_context'] = config.no_context
+        if config.single_segment is not None:
+            params['single_segment'] = config.single_segment
+        if config.preset is not None:
+            params['preset'] = config.preset
+            
         # Create ASR instance for this client
         asr = StreamingWhisperASR(
             model_path=settings["model_path"],
@@ -109,6 +141,7 @@ async def transcribe_audio(websocket: WebSocket):
             n_threads=settings["n_threads"],
             sample_rate=config.sample_rate,
             chunk_size_ms=settings["chunk_size_ms"],
+            **params  # Include any parameters that were provided
         )
         
         # Store in active clients
@@ -182,7 +215,7 @@ async def transcribe_audio(websocket: WebSocket):
         if client_id in active_clients:
             try:
                 # Get final transcript
-                final_text, duration = active_clients[client_id].stop_streaming()
+                final_text, duration = await active_clients[client_id].stop_streaming()
                 # Send final result if available
                 if final_text:
                     try:
@@ -212,7 +245,8 @@ async def root():
         "version": "0.1.0",
         "endpoints": {
             "websocket": "/ws/transcribe"
-        }
+        },
+        "available_presets": list(PARAMETER_PRESETS.keys())
     }
 
 # Add simple HTML test page
@@ -220,7 +254,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 static_dir = os.path.join(current_dir, "static")
 os.makedirs(static_dir, exist_ok=True)
 
-# Create simple HTML test page
+# Create simple HTML test page with additional parameters
 html_content = """
 <!DOCTYPE html>
 <html lang="en">
@@ -233,10 +267,70 @@ html_content = """
         #status { margin: 10px 0; padding: 10px; background-color: #f0f0f0; }
         #transcript { margin: 10px 0; padding: 10px; min-height: 200px; border: 1px solid #ccc; }
         button { padding: 10px; margin: 5px; }
+        .settings { margin: 20px 0; padding: 10px; border: 1px solid #ddd; }
+        .setting-group { margin-bottom: 10px; }
+        label { display: inline-block; width: 150px; }
     </style>
 </head>
 <body>
     <h1>Real-time Speech Recognition Test</h1>
+    
+    <div class="settings">
+        <h3>Settings</h3>
+        <div class="setting-group">
+            <label for="language">Language:</label>
+            <select id="language">
+                <option value="en" selected>English</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+                <option value="es">Spanish</option>
+                <option value="it">Italian</option>
+                <option value="ja">Japanese</option>
+                <option value="zh">Chinese</option>
+                <option value="auto">Auto Detect</option>
+            </select>
+        </div>
+        
+        <div class="setting-group">
+            <label for="preset">Parameter Preset:</label>
+            <select id="preset">
+                <option value="" selected>None (Custom)</option>
+                <option value="default">Default</option>
+                <option value="creative">Creative</option>
+                <option value="structured">Structured</option>
+                <option value="technical">Technical</option>
+                <option value="meeting">Meeting</option>
+            </select>
+        </div>
+        
+        <div class="setting-group">
+            <label for="temperature">Temperature:</label>
+            <input type="range" id="temperature" min="0" max="1" step="0.1" value="0">
+            <span id="temperature-value">0.0</span>
+        </div>
+        
+        <div class="setting-group">
+            <label for="initial-prompt">Initial Prompt:</label>
+            <input type="text" id="initial-prompt" style="width: 300px">
+        </div>
+        
+        <div class="setting-group">
+            <label for="max-tokens">Max Tokens:</label>
+            <input type="number" id="max-tokens" min="0" max="500" value="0">
+            <span>(0 = no limit)</span>
+        </div>
+        
+        <div class="setting-group">
+            <label for="no-context">No Context:</label>
+            <input type="checkbox" id="no-context">
+        </div>
+        
+        <div class="setting-group">
+            <label for="single-segment">Single Segment:</label>
+            <input type="checkbox" id="single-segment" checked>
+        </div>
+    </div>
+    
     <div>
         <button id="startBtn">Start Recording</button>
         <button id="stopBtn" disabled>Stop Recording</button>
@@ -252,6 +346,31 @@ html_content = """
         const stopBtn = document.getElementById('stopBtn');
         const statusDiv = document.getElementById('status');
         const transcriptDiv = document.getElementById('transcript');
+        const temperatureSlider = document.getElementById('temperature');
+        const temperatureValue = document.getElementById('temperature-value');
+        const presetSelect = document.getElementById('preset');
+        
+        // Update temperature value display
+        temperatureSlider.addEventListener('input', () => {
+            temperatureValue.textContent = temperatureSlider.value;
+        });
+        
+        // Handle preset selection
+        presetSelect.addEventListener('change', () => {
+            if (presetSelect.value === '') {
+                // Custom settings - do nothing
+                return;
+            }
+            
+            // Preset values will be applied on the server
+            // Just disable individual settings when a preset is selected
+            const isCustom = presetSelect.value === '';
+            document.getElementById('temperature').disabled = !isCustom;
+            document.getElementById('initial-prompt').disabled = !isCustom;
+            document.getElementById('max-tokens').disabled = !isCustom;
+            document.getElementById('no-context').disabled = !isCustom;
+            document.getElementById('single-segment').disabled = !isCustom;
+        });
         
         let socket;
         let mediaRecorder;
@@ -273,11 +392,33 @@ html_content = """
                 socket = new WebSocket(wsUrl);
                 
                 socket.onopen = async () => {
-                    // Send configuration
+                    // Get configuration from UI
                     const config = {
-                        language: 'en',
+                        language: document.getElementById('language').value,
                         sample_rate: 16000
                     };
+                    
+                    // Add advanced parameters if selected
+                    if (presetSelect.value) {
+                        config.preset = presetSelect.value;
+                    } else {
+                        // Only add these if no preset is selected
+                        const temperature = parseFloat(temperatureSlider.value);
+                        config.temperature = temperature;
+                        
+                        const initialPrompt = document.getElementById('initial-prompt').value;
+                        if (initialPrompt) {
+                            config.initial_prompt = initialPrompt;
+                        }
+                        
+                        const maxTokens = parseInt(document.getElementById('max-tokens').value);
+                        config.max_tokens = maxTokens;
+                        
+                        config.no_context = document.getElementById('no-context').checked;
+                        config.single_segment = document.getElementById('single-segment').checked;
+                    }
+                    
+                    // Send configuration
                     socket.send(JSON.stringify(config));
                     
                     // Wait for ready message
@@ -401,6 +542,39 @@ with open(os.path.join(static_dir, "index.html"), "w") as f:
 # Mount static files
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+# Add control endpoint to change parameters at runtime
+@app.post("/update_params/{client_id}")
+async def update_client_params(
+    client_id: str,
+    temperature: Optional[float] = None,
+    initial_prompt: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    no_context: Optional[bool] = None,
+    single_segment: Optional[bool] = None,
+    preset: Optional[str] = None
+):
+    """Update parameters for an active client."""
+    if client_id not in active_clients:
+        raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
+    
+    try:
+        asr = active_clients[client_id]
+        
+        if preset:
+            asr.set_parameter_preset(preset)
+        else:
+            asr.update_parameters(
+                temperature=temperature,
+                initial_prompt=initial_prompt,
+                max_tokens=max_tokens,
+                no_context=no_context,
+                single_segment=single_segment
+            )
+        
+        return {"status": "success", "message": "Parameters updated"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating parameters: {str(e)}")
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Streaming Speech Recognition Server')
@@ -414,6 +588,19 @@ def parse_args():
                         help='Default language code')
     parser.add_argument('--threads', type=int, default=4,
                         help='Number of CPU threads to use')
+    # Add new parameters
+    parser.add_argument('--temperature', type=float, default=0.0,
+                        help='Temperature for sampling (higher=more creative)')
+    parser.add_argument('--initial-prompt', type=str, default=None,
+                        help='Initial prompt to guide transcription')
+    parser.add_argument('--max-tokens', type=int, default=0,
+                        help='Maximum tokens per segment (0=no limit)')
+    parser.add_argument('--no-context', action='store_true',
+                        help='Do not use past transcription as context')
+    parser.add_argument('--single-segment', action='store_true', default=True,
+                        help='Force single segment output (useful for streaming)')
+    parser.add_argument('--preset', type=str, choices=list(PARAMETER_PRESETS.keys()),
+                        help='Parameter preset to use')
     
     return parser.parse_args()
 
@@ -425,6 +612,12 @@ def main():
     settings["model_path"] = args.model
     settings["language"] = args.language
     settings["n_threads"] = args.threads
+    settings["temperature"] = args.temperature
+    settings["initial_prompt"] = args.initial_prompt
+    settings["max_tokens"] = args.max_tokens
+    settings["no_context"] = args.no_context
+    settings["single_segment"] = args.single_segment
+    settings["preset"] = args.preset
     
     # Run server
     uvicorn.run(app, host=args.host, port=args.port)

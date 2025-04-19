@@ -24,6 +24,45 @@ class StreamingTranscriptionResult:
     end_time: float
     chunk_id: int
 
+# Define parameter presets for experimentation
+PARAMETER_PRESETS = {
+    "default": {
+        "temperature": 0.2,
+        "initial_prompt": "",
+        "max_tokens": 100,
+        "no_context": False,
+        "single_segment": True
+    },
+    "creative": {
+        "temperature": 0.6,
+        "initial_prompt": "Creative interpretation of the audio:",
+        "max_tokens": 0,
+        "no_context": False,
+        "single_segment": True
+    },
+    "structured": {
+        "temperature": 0.0,
+        "initial_prompt": "Transcript formatted as a dialogue:",
+        "max_tokens": 100,
+        "no_context": False,
+        "single_segment": True
+    },
+    "technical": {
+        "temperature": 0.2,
+        "initial_prompt": "Technical discussion transcript:",
+        "max_tokens": 0,
+        "no_context": False,
+        "single_segment": True
+    },
+    "meeting": {
+        "temperature": 0.3,
+        "initial_prompt": "Minutes from a business meeting:",
+        "max_tokens": 150,
+        "no_context": False,
+        "single_segment": True
+    }
+}
+
 class StreamingWhisperASR:
     """
     Streaming speech recognition using Whisper.cpp via pywhispercpp.
@@ -45,6 +84,14 @@ class StreamingWhisperASR:
         max_chunk_size_ms: int = 30000,
         vad_enabled: bool = True,
         translate: bool = False,
+        # Add the parameters for experimentation
+        temperature: float = 0.0,
+        initial_prompt: Optional[str] = None,
+        max_tokens: int = 0,
+        no_context: bool = False,
+        single_segment: bool = True,
+        # Add preset parameter
+        preset: Optional[str] = None
     ):
         """
         Initialize StreamingWhisperASR.
@@ -61,10 +108,33 @@ class StreamingWhisperASR:
             max_chunk_size_ms: Maximum chunk size in milliseconds
             vad_enabled: Whether to use voice activity detection
             translate: Whether to translate non-English to English
+            temperature: Controls creativity in transcription (higher = more creative)
+            initial_prompt: Provides context to guide the transcription
+            max_tokens: Limits the number of tokens per segment
+            no_context: Controls whether to use previous transcription as context
+            single_segment: Enabled for better streaming performance
+            preset: Name of parameter preset to use (overrides individual parameters)
         """
         self.sample_rate = sample_rate
         self.vad_enabled = vad_enabled
         self.executor = ThreadPoolExecutor(max_workers=1)
+        
+        # If a preset is specified, use its parameters
+        if preset and preset in PARAMETER_PRESETS:
+            logger.info(f"Using parameter preset: {preset}")
+            preset_params = PARAMETER_PRESETS[preset]
+            temperature = preset_params["temperature"]
+            initial_prompt = preset_params["initial_prompt"]
+            max_tokens = preset_params["max_tokens"]
+            no_context = preset_params["no_context"]
+            single_segment = preset_params["single_segment"]
+        
+        # Store the parameters for transcription
+        self.temperature = temperature
+        self.initial_prompt = initial_prompt
+        self.max_tokens = max_tokens
+        self.no_context = no_context
+        self.single_segment = single_segment
         
         # Initialize the audio chunker
         self.chunker = AudioChunker(
@@ -79,14 +149,27 @@ class StreamingWhisperASR:
         # Initialize the Whisper model using pywhispercpp
         try:
             logger.info(f"Loading model: {model_path}")
-            # Try to load the model directly - using the simplest form
+            
+            # Initialize the model
             self.model = Model(model_path)
-            logger.info(f"Successfully loaded model")
+            
+            # Store transcription parameters
+            self.transcribe_params = {
+                "temperature": self.temperature,
+                "initial_prompt": self.initial_prompt,
+                "max_tokens": self.max_tokens,
+                "no_context": self.no_context,
+                "single_segment": self.single_segment
+            }
+            
+            # Log the parameters we're using
+            param_str = ", ".join([f"{k}={v}" for k, v in self.transcribe_params.items() if v is not None])
+            logger.info(f"Model parameters: {param_str}")
         except Exception as e:
             logger.error(f"Error loading model from {model_path}: {e}")
             logger.info("Falling back to base.en model")
-            # Fall back to base.en model with minimal options
             self.model = Model("base.en")
+            self.transcribe_params = {}
         
         # Set translation if needed
         if translate:
@@ -197,9 +280,11 @@ class StreamingWhisperASR:
         try:
             # Run in a separate thread to avoid blocking the event loop
             loop = asyncio.get_event_loop()
+            
+            # Pass the transcription parameters to the model
             segments = await loop.run_in_executor(
                 self.executor, 
-                lambda: self.model.transcribe(chunk)
+                lambda: self.model.transcribe(chunk, **self.transcribe_params)
             )
             
             processing_time = time.time() - start_time
@@ -286,6 +371,61 @@ class StreamingWhisperASR:
         
         logger.info(f"Stopped streaming session after {self.stream_duration:.2f}s")
         return final_text.strip(), self.stream_duration
+    
+    def update_parameters(self, 
+                        temperature: Optional[float] = None,
+                        initial_prompt: Optional[str] = None,
+                        max_tokens: Optional[int] = None,
+                        no_context: Optional[bool] = None,
+                        single_segment: Optional[bool] = None):
+        """
+        Update transcription parameters mid-session.
+        
+        Args:
+            temperature: New temperature value
+            initial_prompt: New initial prompt
+            max_tokens: New max tokens value
+            no_context: New no_context value
+            single_segment: New single_segment value
+        """
+        if temperature is not None:
+            self.transcribe_params["temperature"] = temperature
+        
+        if initial_prompt is not None:
+            self.transcribe_params["initial_prompt"] = initial_prompt
+        
+        if max_tokens is not None:
+            self.transcribe_params["max_tokens"] = max_tokens
+        
+        if no_context is not None:
+            self.transcribe_params["no_context"] = no_context
+        
+        if single_segment is not None:
+            self.transcribe_params["single_segment"] = single_segment
+        
+        logger.info(f"Updated transcription parameters: {self.transcribe_params}")
+    
+    def set_parameter_preset(self, preset: str):
+        """
+        Set parameters according to a predefined preset.
+        
+        Args:
+            preset: Name of the preset to use
+        """
+        if preset not in PARAMETER_PRESETS:
+            logger.warning(f"Preset '{preset}' not found. Available presets: {list(PARAMETER_PRESETS.keys())}")
+            return
+        
+        preset_params = PARAMETER_PRESETS[preset]
+        self.update_parameters(
+            temperature=preset_params["temperature"],
+            initial_prompt=preset_params["initial_prompt"],
+            max_tokens=preset_params["max_tokens"],
+            no_context=preset_params["no_context"],
+            single_segment=preset_params["single_segment"]
+        )
+        
+        logger.info(f"Applied parameter preset: {preset}")
 
     def __del__(self):
         """Clean up resources."""

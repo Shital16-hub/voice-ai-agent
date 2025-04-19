@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from speech_to_text.streaming.whisper_streaming import StreamingWhisperASR
+from speech_to_text.streaming.whisper_streaming import StreamingWhisperASR, PARAMETER_PRESETS
 from speech_to_text.utils.audio_utils import load_audio_file
 
 # Set up logging
@@ -93,7 +93,7 @@ async def main():
     """Main function."""
     parser = argparse.ArgumentParser(description='Streaming speech recognition example')
     parser.add_argument('--model', type=str, required=True,
-                      help='Model name or path to model file')
+                      help='Path to Whisper model file or model name')
     parser.add_argument('--audio', type=str, required=True,
                       help='Path to audio file')
     parser.add_argument('--chunk-size', type=int, default=1000,
@@ -108,6 +108,18 @@ async def main():
                       help='Enable voice activity detection')
     parser.add_argument('--translate', action='store_true',
                       help='Enable translation to English')
+    parser.add_argument('--preset', type=str, choices=list(PARAMETER_PRESETS.keys()), 
+                      help='Parameter preset to use')
+    parser.add_argument('--temperature', type=float,
+                      help='Temperature for sampling (higher=more creative)')
+    parser.add_argument('--initial-prompt', type=str,
+                      help='Initial prompt to guide transcription')
+    parser.add_argument('--max-tokens', type=int,
+                      help='Maximum tokens per segment (0=no limit)')
+    parser.add_argument('--no-context', action='store_true',
+                      help='Do not use past transcription as context')
+    parser.add_argument('--single-segment', action='store_true',
+                      help='Force single segment output (useful for streaming)')
     parser.add_argument('--debug', action='store_true',
                       help='Enable debug logging')
     
@@ -119,10 +131,6 @@ async def main():
         logger.debug("Debug logging enabled")
     
     # Validate inputs
-    if os.path.exists(args.model) and not os.path.isfile(args.model):
-        logger.error(f"Model path exists but is not a file: {args.model}")
-        return 1
-    
     if not os.path.isfile(args.audio):
         logger.error(f"Audio file not found: {args.audio}")
         return 1
@@ -132,15 +140,31 @@ async def main():
         return 1
     
     try:
+        # Create parameter dictionary with only provided values
+        params = {}
+        if args.temperature is not None:
+            params['temperature'] = args.temperature
+        if args.initial_prompt is not None:
+            params['initial_prompt'] = args.initial_prompt
+        if args.max_tokens is not None:
+            params['max_tokens'] = args.max_tokens
+        if args.no_context:
+            params['no_context'] = args.no_context
+        if args.single_segment:
+            params['single_segment'] = args.single_segment
+        if args.preset:
+            params['preset'] = args.preset
+            
         # Create ASR instance
-        logger.info(f"Creating StreamingWhisperASR instance with {args.threads} threads")
+        logger.info(f"Creating StreamingWhisperASR instance with model: {args.model}")
         asr = StreamingWhisperASR(
             model_path=args.model,
             language=args.language,
             n_threads=args.threads,
             chunk_size_ms=2000,
             vad_enabled=args.vad,
-            translate=args.translate
+            translate=args.translate,
+            **params  # Include any parameters that were provided
         )
         
         # Process audio file
