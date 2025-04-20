@@ -1,0 +1,7 @@
+# Core dependencies
+aiohttp
+requests
+asyncio
+
+# Optional dependencies
+langdetect

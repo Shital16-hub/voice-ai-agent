@@ -7,7 +7,6 @@ This module provides real-time streaming speech recognition using Whisper.cpp.
 import logging
 from speech_to_text.streaming.whisper_streaming import StreamingWhisperASR, StreamingTranscriptionResult
 from speech_to_text.streaming.chunker import AudioChunker, ChunkMetadata
-from speech_to_text.utils.config import ConfigLoader
 
 __version__ = "0.1.0"
 

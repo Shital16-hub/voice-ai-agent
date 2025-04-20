@@ -1,0 +1,22 @@
+# Core dependencies
+aiohttp
+requests
+asyncio
+
+# Vector database
+chromadb
+
+# Embedding generation
+sentence-transformers
+
+# Document processing 
+python-docx
+pdfplumber
+PyMuPDF
+beautifulsoup4
+pandas
+openpyxl
+
+# Optional dependencies
+spacy
+langdetect

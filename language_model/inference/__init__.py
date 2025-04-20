@@ -1,14 +1,10 @@
 """
-Language model component for the Voice AI Agent.
+Inference modules for language model.
 """
-from language_model.model_manager import ModelManager
 from language_model.inference.ollama_client import OllamaClient
 from language_model.inference.response_formatter import ResponseFormatter
 
-__version__ = "0.1.0"
-
 __all__ = [
-    "ModelManager",
     "OllamaClient",
     "ResponseFormatter",
 ]
