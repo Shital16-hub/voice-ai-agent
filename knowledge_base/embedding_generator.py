@@ -4,6 +4,8 @@ Embedding generator for creating vector representations of documents.
 import logging
 from typing import List, Dict, Any, Optional, Union
 import numpy as np
+import os
+import time
 
 from .config import get_embedding_config
 from .document_processor import Document
@@ -37,12 +39,43 @@ class EmbeddingGenerator:
         """Ensure the model is loaded."""
         if self.model is None:
             try:
+                logger.info(f"Loading embedding model: {self.model_name} on {self.device}")
+                
+                # Check if sentence_transformers is installed
+                try:
+                    import sentence_transformers
+                    logger.info(f"Using sentence_transformers version: {sentence_transformers.__version__}")
+                except ImportError:
+                    logger.error("sentence-transformers not installed!")
+                    raise ImportError("sentence-transformers is not installed. "
+                                "Please install it with: pip install sentence-transformers")
+                
+                # Check for PyTorch
+                try:
+                    import torch
+                    logger.info(f"PyTorch version: {torch.__version__}")
+                    logger.info(f"CUDA available: {torch.cuda.is_available()}")
+                    if self.device == "cuda" and not torch.cuda.is_available():
+                        logger.warning("CUDA requested but not available, falling back to CPU")
+                        self.device = "cpu"
+                except ImportError:
+                    logger.warning("PyTorch not installed or CUDA not available")
+                
+                # Load the model with timing
+                start_time = time.time()
                 from sentence_transformers import SentenceTransformer
                 self.model = SentenceTransformer(self.model_name, device=self.device)
-                logger.info(f"Loaded embedding model: {self.model_name} on {self.device}")
-            except ImportError:
-                raise ImportError("sentence-transformers is not installed. "
-                               "Please install it with: pip install sentence-transformers")
+                load_time = time.time() - start_time
+                logger.info(f"Loaded embedding model: {self.model_name} on {self.device} in {load_time:.2f}s")
+                
+            except ImportError as ie:
+                logger.error(f"Import error loading model: {ie}")
+                raise
+            except Exception as e:
+                logger.error(f"Error loading embedding model: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                raise
     
     def generate_embedding(self, text: str) -> List[float]:
         """
@@ -57,6 +90,8 @@ class EmbeddingGenerator:
         self._ensure_model_loaded()
         
         try:
+            logger.debug(f"Generating embedding for text: {text[:50]}...")
+            
             # Generate embedding
             embedding = self.model.encode(text, show_progress_bar=False)
             
@@ -64,9 +99,12 @@ class EmbeddingGenerator:
             if isinstance(embedding, np.ndarray):
                 embedding = embedding.tolist()
             
+            logger.debug(f"Generated embedding with dimension: {len(embedding)}")
             return embedding
         except Exception as e:
             logger.error(f"Error generating embedding: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             raise
     
     def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
@@ -81,20 +119,31 @@ class EmbeddingGenerator:
         """
         self._ensure_model_loaded()
         
+        if not texts:
+            logger.warning("Empty list of texts provided to generate_embeddings")
+            return []
+            
         try:
-            # Generate embeddings
+            logger.info(f"Generating embeddings for {len(texts)} texts")
+            
+            # Generate embeddings with progress bar for larger batches
+            start_time = time.time()
             embeddings = self.model.encode(
                 texts, 
                 batch_size=self.batch_size,
                 show_progress_bar=len(texts) > 10
             )
+            generation_time = time.time() - start_time
             
             # Convert numpy arrays to lists
             embeddings_list = embeddings.tolist() if isinstance(embeddings, np.ndarray) else embeddings
             
+            logger.info(f"Generated {len(embeddings_list)} embeddings in {generation_time:.2f}s")
             return embeddings_list
         except Exception as e:
             logger.error(f"Error generating embeddings: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             raise
     
     def embed_documents(self, documents: List[Document]) -> List[Dict[str, Any]]:
@@ -107,8 +156,13 @@ class EmbeddingGenerator:
         Returns:
             List of dictionaries with document data and embeddings
         """
+        if not documents:
+            logger.warning("Empty list of documents provided to embed_documents")
+            return []
+            
         # Extract texts
         texts = [doc.text for doc in documents]
+        logger.info(f"Embedding {len(texts)} documents")
         
         # Generate embeddings
         embeddings = self.generate_embeddings(texts)
@@ -122,6 +176,7 @@ class EmbeddingGenerator:
         
         return result
 
+# No changes needed for MockEmbeddingGenerator
 class MockEmbeddingGenerator:
     """
     Mock embedding generator for testing without dependencies.

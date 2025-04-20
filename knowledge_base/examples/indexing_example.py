@@ -31,7 +31,8 @@ async def index_documents(
     use_mock: bool = False,
     in_memory: bool = False,
     extensions: Optional[List[str]] = None,
-    max_files: Optional[int] = None
+    max_files: Optional[int] = None,
+    batch_size: int = 3  # Added batch processing
 ) -> int:
     """
     Index documents from a directory.
@@ -42,6 +43,7 @@ async def index_documents(
         in_memory: Whether to use in-memory vector store
         extensions: File extensions to include
         max_files: Maximum number of files to process
+        batch_size: Number of files to process in each batch
         
     Returns:
         Number of documents indexed
@@ -65,17 +67,30 @@ async def index_documents(
         logger.info("Using InMemoryVectorStore")
     else:
         vector_store = VectorStore()
-        logger.info("Using Qdrant VectorStore")
+        logger.info("Using ChromaStore")
     
     # Initialize vector store
-    await vector_store.init()
+    try:
+        await vector_store.init()
+    except Exception as e:
+        logger.error(f"Error initializing vector store: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise
     
     # Initialize retriever
     retriever = Retriever(
         vector_store=vector_store,
         embedding_generator=embedding_generator
     )
-    await retriever.init()
+    
+    try:
+        await retriever.init()
+    except Exception as e:
+        logger.error(f"Error initializing retriever: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise
     
     # Get list of files
     file_paths = list_documents(directory, extensions=extensions)
@@ -84,28 +99,41 @@ async def index_documents(
         logger.info(f"Limiting to {max_files} files")
         file_paths = file_paths[:max_files]
     
-    # Process and index documents
+    # Process and index documents in batches
     total_documents = 0
     
-    for file_path in file_paths:
-        try:
-            logger.info(f"Processing file: {file_path}")
-            
-            # Load and chunk document
-            documents = doc_processor.load_document(file_path)
-            
-            # Add to vector store
-            doc_ids = await retriever.add_documents(documents)
-            
-            logger.info(f"Indexed {len(doc_ids)} chunks from {file_path}")
-            total_documents += len(doc_ids)
-            
-        except Exception as e:
-            logger.error(f"Error processing {file_path}: {e}")
+    # Process files in batches to manage memory
+    for i in range(0, len(file_paths), batch_size):
+        batch = file_paths[i:i+batch_size]
+        logger.info(f"Processing batch {i//batch_size + 1}/{(len(file_paths) + batch_size - 1)//batch_size}")
+        
+        for file_path in batch:
+            try:
+                logger.info(f"Processing file: {file_path}")
+                
+                # Load and chunk document
+                documents = doc_processor.load_document(file_path)
+                logger.info(f"Loaded document {file_path}: {len(documents)} chunks")
+                
+                # Add to vector store
+                doc_ids = await retriever.add_documents(documents)
+                
+                logger.info(f"Indexed {len(doc_ids)} chunks from {file_path}")
+                total_documents += len(doc_ids)
+                
+            except Exception as e:
+                logger.error(f"Error processing {file_path}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
     
     # Get stats
-    stats = await retriever.get_stats()
-    logger.info(f"Indexing complete. Total documents: {stats['document_count']}")
+    try:
+        stats = await retriever.get_stats()
+        logger.info(f"Indexing complete. Total documents: {stats['document_count']}")
+    except Exception as e:
+        logger.error(f"Error getting retriever stats: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
     
     return total_documents
 
@@ -122,8 +150,18 @@ async def main():
                       help='File extensions to include (e.g., .pdf .txt)')
     parser.add_argument('--max-files', type=int,
                       help='Maximum number of files to process')
+    parser.add_argument('--batch-size', type=int, default=3,
+                      help='Number of files to process in each batch (default: 3)')
+    parser.add_argument('--debug', action='store_true',
+                      help='Enable debug logging')
     
     args = parser.parse_args()
+    
+    # Set debug logging if requested
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        for handler in logging.getLogger().handlers:
+            handler.setLevel(logging.DEBUG)
     
     try:
         # Convert extensions to list if provided
@@ -135,7 +173,8 @@ async def main():
             use_mock=args.use_mock,
             in_memory=args.in_memory,
             extensions=extensions,
-            max_files=args.max_files
+            max_files=args.max_files,
+            batch_size=args.batch_size
         )
         
         print(f"\nSuccessfully indexed {total_docs} document chunks.")

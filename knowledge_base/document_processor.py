@@ -9,7 +9,11 @@ from typing import List, Dict, Any, Optional, Tuple, Iterator, Union
 from pathlib import Path
 import hashlib
 
-from .config import get_document_processor_config
+try:
+    from .config import get_document_processor_config
+except ImportError:
+    # For direct script execution
+    from config import get_document_processor_config
 
 logger = logging.getLogger(__name__)
 
@@ -246,11 +250,19 @@ class DocumentProcessor:
         # Clean text
         text = self._clean_text(text)
         
+        # Check if text is too large
+        if len(text) > 1000000:  # 1MB text limit
+            logger.warning(f"Text is very large ({len(text)} chars), limiting to first 1MB")
+            text = text[:1000000]  # Limit text size to prevent memory issues
+        
         # Simple chunking by characters with overlap
         chunks = []
         start = 0
         
-        while start < len(text):
+        # Limit number of chunks to avoid memory issues
+        max_chunks = 100
+        
+        while start < len(text) and len(chunks) < max_chunks:
             # Get chunk
             end = min(start + self.chunk_size, len(text))
             
@@ -284,6 +296,7 @@ class DocumentProcessor:
             chunk = text[start:end].strip()
             if chunk:
                 chunks.append(chunk)
+                logger.debug(f"Created chunk {len(chunks)} with {len(chunk)} characters")
             
             # Move start position for next chunk
             start = end - self.chunk_overlap
@@ -292,6 +305,10 @@ class DocumentProcessor:
             if start < end - self.chunk_overlap:
                 start = end
         
+        if len(chunks) >= max_chunks:
+            logger.warning(f"Reached maximum chunk limit ({max_chunks})")
+        
+        logger.info(f"Created {len(chunks)} chunks from text of length {len(text)}")
         return chunks
     
     def _clean_text(self, text: str) -> str:

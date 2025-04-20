@@ -36,25 +36,51 @@ class ChromaStore:
         os.makedirs(self.persist_dir, exist_ok=True)
         
         logger.info(f"Initialized ChromaStore with collection: {self.collection_name}")
+        logger.info(f"Persistence directory: {os.path.abspath(self.persist_dir)}")
     
     async def init(self):
         """Initialize connection and ensure collection exists."""
         if self.client is None:
             try:
-                import chromadb
+                # Check if chromadb is installed
+                try:
+                    import chromadb
+                    logger.info(f"ChromaDB version: {chromadb.__version__}")
+                except ImportError:
+                    logger.error("chromadb not installed!")
+                    raise ImportError("chromadb is not installed. "
+                                   "Please install it with: pip install chromadb")
+                
+                # Get absolute path to persistence directory
+                abs_persist_dir = os.path.abspath(self.persist_dir)
+                logger.info(f"Using ChromaDB persistence directory: {abs_persist_dir}")
                 
                 # Create persistent client
-                self.client = chromadb.PersistentClient(path=self.persist_dir)
+                logger.info(f"Creating ChromaDB client...")
+                self.client = chromadb.PersistentClient(path=abs_persist_dir)
                 
                 # Get or create collection
+                logger.info(f"Getting or creating collection: {self.collection_name}")
                 self.collection = self.client.get_or_create_collection(
                     name=self.collection_name
                 )
                 
-                logger.info(f"Connected to ChromaDB, collection: {self.collection_name}, persistent at {self.persist_dir}")
-            except ImportError:
-                raise ImportError("chromadb is not installed. "
-                               "Please install it with: pip install chromadb")
+                # Print info about the collection
+                try:
+                    count = self.collection.count()
+                    logger.info(f"Collection '{self.collection_name}' has {count} documents")
+                except Exception as e:
+                    logger.warning(f"Could not get collection count: {e}")
+                
+                logger.info(f"Connected to ChromaDB, collection: {self.collection_name}, persistent at {abs_persist_dir}")
+            except ImportError as ie:
+                logger.error(f"ChromaDB import error: {ie}")
+                raise
+            except Exception as e:
+                logger.error(f"Error initializing ChromaDB: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                raise
     
     async def add_documents(self, documents: List[Dict[str, Any]]) -> List[str]:
         """
@@ -67,6 +93,7 @@ class ChromaStore:
             List of document IDs
         """
         if not documents:
+            logger.warning("No documents provided to add_documents")
             return []
             
         doc_ids = []
@@ -86,6 +113,8 @@ class ChromaStore:
             metadatas.append(metadata)
         
         try:
+            logger.info(f"Adding {len(documents)} documents to collection {self.collection_name}")
+            
             # Add in batches to ChromaDB (upsert to handle duplicates)
             self.collection.upsert(
                 ids=doc_ids,
@@ -99,6 +128,8 @@ class ChromaStore:
             
         except Exception as e:
             logger.error(f"Error adding documents: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
     
     async def search(
@@ -119,6 +150,8 @@ class ChromaStore:
             List of matching documents
         """
         try:
+            logger.info(f"Searching for similar documents with top_k={top_k}, min_score={min_score}")
+            
             results = self.collection.query(
                 query_embeddings=[query_vector],
                 n_results=min(top_k * 2, 10)  # Get extra results to filter by score
@@ -155,10 +188,13 @@ class ChromaStore:
             
             # Sort by score and limit to top_k
             formatted_results.sort(key=lambda x: x["score"], reverse=True)
+            logger.info(f"Found {len(formatted_results)} documents above score threshold")
             return formatted_results[:top_k]
             
         except Exception as e:
             logger.error(f"Error searching documents: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
     
     async def get_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
@@ -172,6 +208,8 @@ class ChromaStore:
             Document or None if not found
         """
         try:
+            logger.info(f"Getting document with ID: {doc_id}")
+            
             # Get by ID
             result = self.collection.get(
                 ids=[doc_id],
@@ -180,6 +218,7 @@ class ChromaStore:
             
             # Check if we have any results
             if not result["ids"] or not result["ids"]:
+                logger.warning(f"Document with ID {doc_id} not found")
                 return None
             
             # Extract document data
@@ -197,6 +236,8 @@ class ChromaStore:
             
         except Exception as e:
             logger.error(f"Error getting document {doc_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     async def delete_documents(self, doc_ids: List[str]) -> int:
@@ -210,6 +251,8 @@ class ChromaStore:
             Number of documents deleted
         """
         try:
+            logger.info(f"Deleting {len(doc_ids)} documents")
+            
             # Delete documents
             self.collection.delete(ids=doc_ids)
             
@@ -218,6 +261,8 @@ class ChromaStore:
             
         except Exception as e:
             logger.error(f"Error deleting documents: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return 0
     
     async def count_documents(self) -> int:
@@ -230,10 +275,13 @@ class ChromaStore:
         try:
             # Get collection info
             count = self.collection.count()
+            logger.info(f"Collection {self.collection_name} has {count} documents")
             return count
             
         except Exception as e:
             logger.error(f"Error counting documents: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return 0
     
     async def reset_collection(self) -> bool:
@@ -244,6 +292,8 @@ class ChromaStore:
             True if successful
         """
         try:
+            logger.info(f"Resetting collection: {self.collection_name}")
+            
             # Delete collection
             self.client.delete_collection(self.collection_name)
             
@@ -257,6 +307,8 @@ class ChromaStore:
             
         except Exception as e:
             logger.error(f"Error resetting collection: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
 
 
@@ -283,6 +335,7 @@ class InMemoryVectorStore:
     
     async def init(self):
         """Initialize (no-op for in-memory)."""
+        logger.info("Initializing InMemoryVectorStore (no-op)")
         pass
     
     def _cosine_similarity(self, a: List[float], b: List[float]) -> float:
@@ -354,6 +407,7 @@ class InMemoryVectorStore:
         
         # Sort by score (descending) and take top_k
         results.sort(key=lambda x: x["score"], reverse=True)
+        logger.info(f"Found {len(results)} documents matching query, returning top {min(top_k, len(results))}")
         return results[:top_k]
     
     async def get_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
@@ -375,6 +429,7 @@ class InMemoryVectorStore:
                 "metadata": doc["metadata"]
             }
         
+        logger.warning(f"Document with ID {doc_id} not found")
         return None
     
     async def delete_documents(self, doc_ids: List[str]) -> int:
@@ -404,7 +459,9 @@ class InMemoryVectorStore:
         Returns:
             Number of documents
         """
-        return len(self.documents)
+        count = len(self.documents)
+        logger.info(f"In-memory store has {count} documents")
+        return count
     
     async def reset_collection(self) -> bool:
         """
