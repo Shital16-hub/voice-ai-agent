@@ -8,8 +8,7 @@ from typing import List, Dict, Any, Optional, Tuple, Callable, Union
 from enum import Enum
 import time
 
-from .retriever import Retriever
-from .document_processor import Document
+from knowledge_base.llama_index.query_engine import QueryEngine
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +79,7 @@ class ConversationManager:
     
     def __init__(
         self,
-        retriever: Optional[Retriever] = None,
+        query_engine: Optional[QueryEngine] = None,
         language_model_callback: Optional[Callable] = None,
         session_id: Optional[str] = None
     ):
@@ -88,11 +87,11 @@ class ConversationManager:
         Initialize ConversationManager.
         
         Args:
-            retriever: Retriever instance
+            query_engine: QueryEngine instance
             language_model_callback: Callback for language model
             session_id: Unique session identifier
         """
-        self.retriever = retriever
+        self.query_engine = query_engine
         self.language_model_callback = language_model_callback
         self.session_id = session_id or f"session_{int(time.time())}"
         
@@ -105,8 +104,8 @@ class ConversationManager:
     
     async def init(self):
         """Initialize dependencies."""
-        if self.retriever:
-            await self.retriever.init()
+        if self.query_engine:
+            await self.query_engine.init()
     
     async def handle_user_input(self, user_input: str) -> Dict[str, Any]:
         """
@@ -209,17 +208,17 @@ class ConversationManager:
             }
         
         # Retrieve relevant documents
-        if self.retriever:
+        if self.query_engine:
             # Set state to retrieving
             turn.state = ConversationState.RETRIEVING
             
             try:
                 # Get relevant documents
-                retrieval_results = await self.retriever.retrieve_with_sources(query)
+                retrieval_results = await self.query_engine.retrieve_with_sources(query)
                 turn.retrieved_context = retrieval_results["results"]
                 
                 # Format context for LLM
-                context = self.retriever.format_retrieved_context(turn.retrieved_context)
+                context = self.query_engine.format_retrieved_context(turn.retrieved_context)
                 
                 # Check if we have enough context
                 if not turn.retrieved_context:

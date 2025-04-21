@@ -3,19 +3,21 @@ aiohttp
 requests
 asyncio
 
-# Vector database
-chromadb
+# LlamaIndex dependencies
+llama-index
+llama-index-embeddings-huggingface
+llama-index-vector-stores-chroma
 
-# Embedding generation
-sentence-transformers
-
-# Document processing 
+# Document processing
 python-docx
 pdfplumber
 PyMuPDF
 beautifulsoup4
 pandas
 openpyxl
+
+# Embedding models
+sentence-transformers
 
 # Optional dependencies
 spacy

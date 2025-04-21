@@ -30,6 +30,10 @@ RERANKING_ENABLED = os.getenv("RERANKING_ENABLED", "False").lower() == "true"
 MAX_CONVERSATION_HISTORY = int(os.getenv("MAX_CONVERSATION_HISTORY", "5"))
 CONTEXT_WINDOW_SIZE = int(os.getenv("CONTEXT_WINDOW_SIZE", "4096"))
 
+# LlamaIndex settings
+PERSIST_DIR = os.getenv("PERSIST_DIR", "./storage")
+USE_GPU = os.getenv("USE_GPU", "False").lower() == "true"
+
 # Supported file types
 SUPPORTED_DOCUMENT_TYPES = [
     # Text files
@@ -41,6 +45,20 @@ SUPPORTED_DOCUMENT_TYPES = [
     # Web content
     ".html", ".htm", ".xml",
 ]
+
+def get_llama_index_config() -> Dict[str, Any]:
+    """
+    Get LlamaIndex configuration.
+    
+    Returns:
+        Dictionary with LlamaIndex configuration
+    """
+    return {
+        "persist_dir": PERSIST_DIR,
+        "use_gpu": USE_GPU,
+        "embedding_model": EMBEDDING_MODEL,
+        "embedding_device": EMBEDDING_DEVICE
+    }
 
 def get_document_processor_config() -> Dict[str, Any]:
     """
