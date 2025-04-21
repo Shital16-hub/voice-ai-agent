@@ -88,7 +88,8 @@ class ConversationManager:
         session_id: Optional[str] = None,
         llm_model_name: Optional[str] = None,
         llm_temperature: float = 0.7,
-        use_langgraph: bool = False  # Flag for future LangGraph implementation
+        use_langgraph: bool = False,  # Flag for future LangGraph implementation
+        skip_greeting: bool = False   # New parameter to skip greeting state
     ):
         """
         Initialize ConversationManager.
@@ -99,18 +100,20 @@ class ConversationManager:
             llm_model_name: Optional LLM model name
             llm_temperature: Temperature for sampling
             use_langgraph: Whether to use LangGraph (for future implementation)
+            skip_greeting: Whether to skip the greeting state and start in WAITING_FOR_QUERY
         """
         self.query_engine = query_engine
         self.session_id = session_id or f"session_{int(time.time())}"
         self.llm_model_name = llm_model_name
         self.llm_temperature = llm_temperature
         self.use_langgraph = use_langgraph
+        self.skip_greeting = skip_greeting
         
         # LLM setup
         self.llm = None
         
-        # Initialize conversation state
-        self.current_state = ConversationState.GREETING
+        # Initialize conversation state - use skip_greeting to determine initial state
+        self.current_state = ConversationState.WAITING_FOR_QUERY if skip_greeting else ConversationState.GREETING
         self.history: List[ConversationTurn] = []
         self.context_cache: Dict[str, List[Dict[str, Any]]] = {}
         
@@ -123,7 +126,7 @@ class ConversationManager:
             "metadata": {}
         }
         
-        logger.info(f"Initialized ConversationManager with session_id: {self.session_id}")
+        logger.info(f"Initialized ConversationManager with session_id: {self.session_id}, initial_state: {self.current_state}")
     
     async def init(self):
         """Initialize dependencies."""
@@ -164,6 +167,12 @@ class ConversationManager:
             query=user_input,
             state=self.current_state
         )
+        
+        # Check if this looks like a query even if we're in greeting state
+        if self.current_state == ConversationState.GREETING and user_input and len(user_input.split()) > 2:
+            logger.info("First message appears to be a query, handling as query instead of greeting")
+            turn.state = ConversationState.WAITING_FOR_QUERY
+            self.current_state = ConversationState.WAITING_FOR_QUERY
         
         # Process based on current state
         if self.current_state == ConversationState.GREETING:
@@ -255,6 +264,11 @@ class ConversationManager:
         Returns:
             Response dictionary
         """
+        # Check if this is actually a query and not a greeting
+        if turn.query and len(turn.query.split()) > 2:
+            logger.info("Detected query in greeting state, handling as query")
+            return await self._handle_query(turn)
+            
         # Generate greeting response
         if self.llm:
             greeting_prompt = "Generate a friendly greeting for a customer service conversation."
@@ -273,8 +287,14 @@ class ConversationManager:
                 )
                 
                 # Generate response
-                response = await self.llm.achat([system_message, user_message])
-                response_text = response.message.content
+                try:
+                    response = await self.llm.achat([system_message, user_message])
+                    response_text = response.message.content
+                except AttributeError:
+                    # Fallback to synchronous chat if async is not available
+                    logger.info("Falling back to synchronous chat for greeting")
+                    response = self.llm.chat([system_message, user_message])
+                    response_text = response.message.content
             except Exception as e:
                 logger.error(f"Error generating greeting: {e}")
                 response_text = "Hello! How can I assist you today?"
@@ -359,11 +379,21 @@ class ConversationManager:
                 chat_history=conversation_history
             )
             
-            # Generate response
-            response = await self.llm.achat(messages)
-            response_text = response.message.content
+            # Generate response with fallback options
+            try:
+                # First try using the async chat method
+                response = await self.llm.achat(messages)
+                response_text = response.message.content
+            except AttributeError:
+                # If achat fails, try using the synchronous chat method
+                logger.info("Falling back to synchronous chat method")
+                response = self.llm.chat(messages)
+                response_text = response.message.content
+            
+            # Log for debugging
+            logger.info(f"LLM DIRECT RESPONSE: {response_text[:50]}...")
         except Exception as e:
-            logger.error(f"Error generating response: {e}")
+            logger.error(f"Error generating response: {e}", exc_info=True)
             response_text = "I'm sorry, I'm having trouble processing your request right now."
         
         # Return response
@@ -409,6 +439,11 @@ class ConversationManager:
         Returns:
             Async iterator of response chunks
         """
+        # Check if this looks like a query even if we're in greeting state
+        if self.current_state == ConversationState.GREETING and user_input and len(user_input.split()) > 2:
+            logger.info("First message in streaming appears to be a query, handling as query instead of greeting")
+            self.current_state = ConversationState.WAITING_FOR_QUERY
+        
         # Create new turn
         turn = ConversationTurn(
             query=user_input,
@@ -474,18 +509,32 @@ class ConversationManager:
                 chat_history=conversation_history
             )
             
-            # Stream response - FIX HERE
-            # Instead of directly using async for, we need to await the coroutine first
-            stream_response = await self.llm.astream_chat(messages)
-            
-            # Now we can iterate through the streaming response
-            async for chunk in stream_response:
-                # The attribute name might be delta or content depending on your LlamaIndex version
-                chunk_text = chunk.delta if hasattr(chunk, 'delta') else chunk.content
-                full_response += chunk_text
+            try:
+                # Try async streaming first
+                stream_response = await self.llm.astream_chat(messages)
                 
+                # Now we can iterate through the streaming response
+                async for chunk in stream_response:
+                    # The attribute name might be delta or content depending on your LlamaIndex version
+                    chunk_text = chunk.delta if hasattr(chunk, 'delta') else chunk.content
+                    full_response += chunk_text
+                    
+                    yield {
+                        "chunk": chunk_text,
+                        "done": False,
+                        "requires_human": False,
+                        "state": ConversationState.GENERATING_RESPONSE
+                    }
+            except AttributeError:
+                # If astream_chat is not available, fall back to non-streaming
+                logger.info("Async streaming not available, falling back to regular chat")
+                response = self.llm.chat(messages)
+                response_text = response.message.content
+                full_response = response_text
+                
+                # Send the full response as a single chunk
                 yield {
-                    "chunk": chunk_text,
+                    "chunk": response_text,
                     "done": False,
                     "requires_human": False,
                     "state": ConversationState.GENERATING_RESPONSE
@@ -510,7 +559,7 @@ class ConversationManager:
             self._update_graph_state(turn)
             
         except Exception as e:
-            logger.error(f"Error generating streaming response: {e}")
+            logger.error(f"Error generating streaming response: {e}", exc_info=True)
             
             error_message = "I'm sorry, I'm having trouble processing your request right now."
             yield {
@@ -654,7 +703,8 @@ class ConversationManager:
     
     def reset(self):
         """Reset conversation state."""
-        self.current_state = ConversationState.GREETING
+        # Reset to initial state based on skip_greeting flag
+        self.current_state = ConversationState.WAITING_FOR_QUERY if self.skip_greeting else ConversationState.GREETING
         self.history = []
         self.context_cache = {}
         
