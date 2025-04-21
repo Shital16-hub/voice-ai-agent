@@ -1,14 +1,19 @@
 """
-Conversation manager using LangGraph for state management.
+Conversation manager using state management with future LangGraph compatibility.
 """
 import logging
 import asyncio
-import json
-from typing import List, Dict, Any, Optional, Tuple, Callable, Union
+from typing import List, Dict, Any, Optional, Tuple, AsyncIterator, Union
 from enum import Enum
 import time
+import json
+
+from llama_index.core.llms import ChatMessage, MessageRole
+from llama_index.core import Settings
+from llama_index.core.schema import NodeWithScore
 
 from knowledge_base.llama_index.query_engine import QueryEngine
+from knowledge_base.llama_index.llm_setup import get_ollama_llm, format_system_prompt, create_chat_messages
 
 logger = logging.getLogger(__name__)
 
@@ -68,44 +73,77 @@ class ConversationTurn:
             query=data.get("query"),
             response=data.get("response"),
             retrieved_context=data.get("retrieved_context", []),
-            state=data.get("state", ConversationState.WAITING_FOR_QUERY),
+            state=ConversationState(data.get("state", ConversationState.WAITING_FOR_QUERY)),
             metadata=data.get("metadata", {})
         )
 
 class ConversationManager:
     """
-    Manage conversation state and flow using LangGraph.
+    Manage conversation state and flow with future LangGraph compatibility.
     """
     
     def __init__(
         self,
         query_engine: Optional[QueryEngine] = None,
-        language_model_callback: Optional[Callable] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        llm_model_name: Optional[str] = None,
+        llm_temperature: float = 0.7,
+        use_langgraph: bool = False  # Flag for future LangGraph implementation
     ):
         """
         Initialize ConversationManager.
         
         Args:
             query_engine: QueryEngine instance
-            language_model_callback: Callback for language model
             session_id: Unique session identifier
+            llm_model_name: Optional LLM model name
+            llm_temperature: Temperature for sampling
+            use_langgraph: Whether to use LangGraph (for future implementation)
         """
         self.query_engine = query_engine
-        self.language_model_callback = language_model_callback
         self.session_id = session_id or f"session_{int(time.time())}"
+        self.llm_model_name = llm_model_name
+        self.llm_temperature = llm_temperature
+        self.use_langgraph = use_langgraph
+        
+        # LLM setup
+        self.llm = None
         
         # Initialize conversation state
         self.current_state = ConversationState.GREETING
         self.history: List[ConversationTurn] = []
         self.context_cache: Dict[str, List[Dict[str, Any]]] = {}
         
+        # State for LangGraph (will be expanded later)
+        self.graph_state = {
+            "session_id": self.session_id,
+            "current_state": self.current_state,
+            "history": [],
+            "context": None,
+            "metadata": {}
+        }
+        
         logger.info(f"Initialized ConversationManager with session_id: {self.session_id}")
     
     async def init(self):
         """Initialize dependencies."""
+        # Initialize query engine if provided
         if self.query_engine:
             await self.query_engine.init()
+        
+        # Initialize LLM if not already set globally
+        if not Settings.llm:
+            self.llm = get_ollama_llm(
+                model_name=self.llm_model_name,
+                temperature=self.llm_temperature
+            )
+        else:
+            self.llm = Settings.llm
+        
+        # Initialize LangGraph components if enabled (placeholder for future)
+        if self.use_langgraph:
+            logger.info("LangGraph integration will be implemented in a future update")
+            # This will be expanded in the future LangGraph implementation
     
     async def handle_user_input(self, user_input: str) -> Dict[str, Any]:
         """
@@ -117,6 +155,10 @@ class ConversationManager:
         Returns:
             Response with next state and response text
         """
+        # For future LangGraph implementation
+        if self.use_langgraph:
+            return await self._handle_user_input_langgraph(user_input)
+        
         # Create new turn
         turn = ConversationTurn(
             query=user_input,
@@ -153,7 +195,55 @@ class ConversationManager:
         # Update current state
         self.current_state = response["state"]
         
+        # Update graph state (for future LangGraph compatibility)
+        self._update_graph_state(turn)
+        
         return response
+    
+    async def _handle_user_input_langgraph(self, user_input: str) -> Dict[str, Any]:
+        """
+        LangGraph implementation of user input handling (placeholder for future).
+        
+        Args:
+            user_input: User input text
+            
+        Returns:
+            Response dictionary
+        """
+        # This will be implemented in the future LangGraph integration
+        logger.info("LangGraph integration will be implemented in a future update")
+        
+        # For now, fall back to standard implementation
+        return await self.handle_user_input(user_input)
+    
+    def _update_graph_state(self, turn: ConversationTurn):
+        """
+        Update the graph state with the latest turn information.
+        Prepares for future LangGraph implementation.
+        
+        Args:
+            turn: Latest conversation turn
+        """
+        # Update current state
+        self.graph_state["current_state"] = turn.state
+        
+        # Add to history
+        history_entry = {
+            "role": "user",
+            "content": turn.query
+        }
+        self.graph_state["history"].append(history_entry)
+        
+        if turn.response:
+            response_entry = {
+                "role": "assistant",
+                "content": turn.response
+            }
+            self.graph_state["history"].append(response_entry)
+        
+        # Update context if available
+        if turn.retrieved_context:
+            self.graph_state["context"] = turn.retrieved_context
     
     async def _handle_greeting(self, turn: ConversationTurn) -> Dict[str, Any]:
         """
@@ -166,12 +256,25 @@ class ConversationManager:
             Response dictionary
         """
         # Generate greeting response
-        if self.language_model_callback:
+        if self.llm:
             greeting_prompt = "Generate a friendly greeting for a customer service conversation."
             
             try:
-                greeting_response = await self.language_model_callback(greeting_prompt)
-                response_text = greeting_response["response"]
+                # Create system message
+                system_message = ChatMessage(
+                    role=MessageRole.SYSTEM,
+                    content="You are a helpful AI assistant. Keep your response brief and friendly."
+                )
+                
+                # Create user message
+                user_message = ChatMessage(
+                    role=MessageRole.USER,
+                    content=greeting_prompt
+                )
+                
+                # Generate response
+                response = await self.llm.achat([system_message, user_message])
+                response_text = response.message.content
             except Exception as e:
                 logger.error(f"Error generating greeting: {e}")
                 response_text = "Hello! How can I assist you today?"
@@ -208,6 +311,7 @@ class ConversationManager:
             }
         
         # Retrieve relevant documents
+        context = None
         if self.query_engine:
             # Set state to retrieving
             turn.state = ConversationState.RETRIEVING
@@ -234,31 +338,33 @@ class ConversationManager:
             except Exception as e:
                 logger.error(f"Error retrieving documents: {e}")
                 context = None
-        else:
-            context = None
         
         # Generate response
-        if self.language_model_callback:
-            try:
-                # Set state to generating response
-                turn.state = ConversationState.GENERATING_RESPONSE
-                
-                # Get conversation history for context
-                conversation_history = self._format_conversation_history()
-                
-                # Generate response with LLM
-                response_data = await self.language_model_callback(
-                    query,
-                    context=context,
-                    conversation_history=conversation_history
-                )
-                
-                response_text = response_data["response"]
-            except Exception as e:
-                logger.error(f"Error generating response: {e}")
-                response_text = "I'm sorry, I'm having trouble processing your request right now."
-        else:
-            response_text = "I would answer your query, but I need language model integration to generate a response."
+        turn.state = ConversationState.GENERATING_RESPONSE
+        
+        try:
+            # Get conversation history for context
+            conversation_history = self._format_conversation_history()
+            
+            # Create system prompt with context
+            system_prompt = format_system_prompt(
+                base_prompt="You are a helpful AI assistant. Answer the user's question based on the provided information.",
+                retrieved_context=context
+            )
+            
+            # Create messages
+            messages = create_chat_messages(
+                system_prompt=system_prompt,
+                user_message=query,
+                chat_history=conversation_history
+            )
+            
+            # Generate response
+            response = await self.llm.achat(messages)
+            response_text = response.message.content
+        except Exception as e:
+            logger.error(f"Error generating response: {e}")
+            response_text = "I'm sorry, I'm having trouble processing your request right now."
         
         # Return response
         return {
@@ -292,6 +398,136 @@ class ConversationManager:
         
         # Handle as normal query
         return await self._handle_query(new_turn)
+    
+    async def generate_streaming_response(self, user_input: str) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Generate a streaming response to user input.
+        
+        Args:
+            user_input: User input text
+            
+        Returns:
+            Async iterator of response chunks
+        """
+        # Create new turn
+        turn = ConversationTurn(
+            query=user_input,
+            state=self.current_state
+        )
+        
+        # Check for human handoff
+        if self._check_for_human_handoff(user_input):
+            result = {
+                "chunk": "I'll connect you with a human agent shortly. Please wait a moment.",
+                "done": True,
+                "requires_human": True,
+                "state": ConversationState.HUMAN_HANDOFF
+            }
+            
+            # Update turn and history
+            turn.response = result["chunk"]
+            turn.state = ConversationState.HUMAN_HANDOFF
+            self.history.append(turn)
+            self.current_state = ConversationState.HUMAN_HANDOFF
+            
+            # Update graph state
+            self._update_graph_state(turn)
+            
+            yield result
+            return
+        
+        # Retrieve relevant documents if appropriate
+        context = None
+        if self.query_engine:
+            try:
+                # Set state to retrieving
+                turn.state = ConversationState.RETRIEVING
+                
+                # Get relevant documents
+                retrieval_results = await self.query_engine.retrieve_with_sources(user_input)
+                turn.retrieved_context = retrieval_results["results"]
+                
+                # Format context for LLM
+                context = self.query_engine.format_retrieved_context(turn.retrieved_context)
+            except Exception as e:
+                logger.error(f"Error retrieving documents: {e}")
+                context = None
+        
+        # Stream response
+        turn.state = ConversationState.GENERATING_RESPONSE
+        full_response = ""
+        
+        try:
+            # Get conversation history
+            conversation_history = self._format_conversation_history()
+            
+            # Create system prompt with context
+            system_prompt = format_system_prompt(
+                base_prompt="You are a helpful AI assistant. Answer the user's question based on the provided information.",
+                retrieved_context=context
+            )
+            
+            # Create messages
+            messages = create_chat_messages(
+                system_prompt=system_prompt,
+                user_message=user_input,
+                chat_history=conversation_history
+            )
+            
+            # Stream response - FIX HERE
+            # Instead of directly using async for, we need to await the coroutine first
+            stream_response = await self.llm.astream_chat(messages)
+            
+            # Now we can iterate through the streaming response
+            async for chunk in stream_response:
+                # The attribute name might be delta or content depending on your LlamaIndex version
+                chunk_text = chunk.delta if hasattr(chunk, 'delta') else chunk.content
+                full_response += chunk_text
+                
+                yield {
+                    "chunk": chunk_text,
+                    "done": False,
+                    "requires_human": False,
+                    "state": ConversationState.GENERATING_RESPONSE
+                }
+            
+            # Final result
+            yield {
+                "chunk": "",
+                "full_response": full_response,
+                "done": True,
+                "requires_human": False,
+                "state": ConversationState.WAITING_FOR_QUERY
+            }
+            
+            # Update turn and history
+            turn.response = full_response
+            turn.state = ConversationState.WAITING_FOR_QUERY
+            self.history.append(turn)
+            self.current_state = ConversationState.WAITING_FOR_QUERY
+            
+            # Update graph state
+            self._update_graph_state(turn)
+            
+        except Exception as e:
+            logger.error(f"Error generating streaming response: {e}")
+            
+            error_message = "I'm sorry, I'm having trouble processing your request right now."
+            yield {
+                "chunk": error_message,
+                "done": True,
+                "requires_human": False,
+                "state": ConversationState.WAITING_FOR_QUERY
+            }
+            
+            # Update turn and history
+            turn.response = error_message
+            turn.state = ConversationState.WAITING_FOR_QUERY
+            self.history.append(turn)
+            self.current_state = ConversationState.WAITING_FOR_QUERY
+            
+            # Update graph state
+            self._update_graph_state(turn)
     
     def _check_for_human_handoff(self, query: str) -> bool:
         """
@@ -422,6 +658,15 @@ class ConversationManager:
         self.history = []
         self.context_cache = {}
         
+        # Reset graph state
+        self.graph_state = {
+            "session_id": self.session_id,
+            "current_state": self.current_state,
+            "history": [],
+            "context": None,
+            "metadata": {}
+        }
+        
         logger.info(f"Reset conversation for session: {self.session_id}")
     
     def get_state_for_transfer(self) -> Dict[str, Any]:
@@ -470,3 +715,35 @@ class ConversationManager:
                 summary_parts.append(f"AI: {response}")
         
         return "\n".join(summary_parts)
+    
+    # LangGraph preparation - placeholder methods for future implementation
+    def get_graph_state(self) -> Dict[str, Any]:
+        """
+        Get the current graph state.
+        
+        Returns:
+            Current graph state
+        """
+        return self.graph_state
+    
+    def serialize_state(self) -> str:
+        """
+        Serialize the current state for LangGraph.
+        
+        Returns:
+            Serialized state
+        """
+        return json.dumps(self.graph_state)
+    
+    @classmethod
+    def deserialize_state(cls, serialized_state: str) -> Dict[str, Any]:
+        """
+        Deserialize a state for LangGraph.
+        
+        Args:
+            serialized_state: Serialized state
+            
+        Returns:
+            Deserialized state
+        """
+        return json.loads(serialized_state)

@@ -1,0 +1,35 @@
+# Core dependencies
+aiohttp
+numpy
+pydantic
+typing-extensions
+asyncio
+
+# LlamaIndex dependencies
+llama-index
+llama-index-llms-ollama
+llama-index-embeddings-huggingface
+llama-index-vector-stores-chroma
+
+# Speech-to-Text dependencies
+pywhispercpp
+soundfile
+# Document processing
+python-docx
+pdfplumber
+PyMuPDF
+beautifulsoup4
+pandas
+openpyxl
+# Embedding models
+sentence-transformers
+
+# Vector Database
+chromadb
+
+# Optional utilities
+spacy
+langdetect
+
+# Testing
+pytest
