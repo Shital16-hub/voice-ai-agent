@@ -21,6 +21,26 @@ DEFAULT_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))
 DEFAULT_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "4096"))
 
+
+# Add this function to knowledge_base/llama_index/llm_setup.py
+def check_ollama_availability(base_url: str = OLLAMA_BASE_URL) -> bool:
+    """
+    Check if Ollama is running and accessible.
+    
+    Args:
+        base_url: Ollama API base URL
+        
+    Returns:
+        True if Ollama is available
+    """
+    import requests
+    try:
+        response = requests.get(f"{base_url}/api/tags")
+        return response.status_code == 200
+    except Exception as e:
+        logger.error(f"Ollama not available: {e}")
+        return False
+
 def get_ollama_llm(
     model_name: Optional[str] = None,
     temperature: Optional[float] = None,
@@ -43,6 +63,11 @@ def get_ollama_llm(
     model = model_name or DEFAULT_MODEL
     base_url = kwargs.pop("base_url", OLLAMA_BASE_URL)
     request_timeout = kwargs.pop("request_timeout", OLLAMA_TIMEOUT)
+
+    # Check if Ollama is available
+    if not check_ollama_availability(base_url):
+        raise ValueError(f"Ollama not available at {base_url}. Please ensure Ollama is running.")
+
     
     # Build parameters
     params = {

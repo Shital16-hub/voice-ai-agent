@@ -18,11 +18,12 @@ from knowledge_base.llama_index.llm_setup import get_ollama_llm, format_system_p
 
 logger = logging.getLogger(__name__)
 
+
 class QueryEngine:
     """
     Retrieve and generate information from the knowledge base using LlamaIndex.
     """
-    
+
     def __init__(
         self,
         index_manager: IndexManager,
@@ -33,7 +34,7 @@ class QueryEngine:
     ):
         """
         Initialize QueryEngine.
-        
+
         Args:
             index_manager: IndexManager instance
             config: Optional configuration dictionary
@@ -48,57 +49,51 @@ class QueryEngine:
         self.llm_model_name = llm_model_name
         self.llm_temperature = llm_temperature
         self.llm_max_tokens = llm_max_tokens
-        
+
         self.retriever = None
         self.query_engine = None
         self.llm = None
         self.is_initialized = False
-        
+
         logger.info(f"Initialized QueryEngine with top_k={self.top_k}, min_score={self.min_score}")
 
     async def init(self):
         """Initialize the query engine."""
         if self.is_initialized:
             return
-        
-        # Ensure index manager is initialized
+
         if not self.index_manager.is_initialized:
             await self.index_manager.init()
-        
-        # Get LLM instance
+
         self.llm = get_ollama_llm(
             model_name=self.llm_model_name,
             temperature=self.llm_temperature,
             max_tokens=self.llm_max_tokens
         )
-        
-        # Set globally if not already set
-        if Settings.llm is None:
-            Settings.llm = self.llm
-        
-        # Create retriever
+
+        Settings.llm = self.llm
+
         self.retriever = VectorIndexRetriever(
             index=self.index_manager.index,
             similarity_top_k=self.top_k,
             filters=None
         )
-        
-        # Create response synthesizer
+
         from llama_index.core.response_synthesizers import ResponseMode
         response_synthesizer = get_response_synthesizer(
             response_mode=ResponseMode.COMPACT,
+            llm=self.llm
         )
-        
-        # Create query engine - WITHOUT passing llm parameter
-        self.query_engine = RetrieverQueryEngine(
+
+        self.query_engine = RetrieverQueryEngine.from_args(
             retriever=self.retriever,
             response_synthesizer=response_synthesizer,
-            # Remove the llm parameter
+            llm=self.llm
         )
-        
+
         self.is_initialized = True
         logger.info("Query engine initialized with LlamaIndex LLM integration")
-        
+
     async def retrieve(
         self,
         query: str,
@@ -108,63 +103,47 @@ class QueryEngine:
     ) -> List[Document]:
         """
         Retrieve relevant documents for a query.
-        
-        Args:
-            query: Query text
-            top_k: Number of results to return (overrides default)
-            min_score: Minimum similarity score (overrides default)
-            filter_metadata: Optional metadata filter
-            
-        Returns:
-            List of relevant documents
         """
         if not self.is_initialized:
             await self.init()
-        
-        # Use provided values or defaults
+
         top_k = top_k if top_k is not None else self.top_k
-        
+
         try:
-            # Create query bundle
             query_bundle = QueryBundle(query_str=query)
-            
-            # Update retriever if needed
+
             if top_k != self.retriever.similarity_top_k:
                 self.retriever.similarity_top_k = top_k
-            
-            # Apply metadata filters if provided
+
             if filter_metadata:
                 filters = {"metadata_filter": filter_metadata}
                 self.retriever.filters = filters
             else:
                 self.retriever.filters = None
-            
-            # Retrieve nodes
+
             nodes = self.retriever.retrieve(query_bundle)
-            
-            # Convert to Document objects and filter by score if needed
+
             documents = []
             for node in nodes:
-                # Skip if below minimum score (if provided)
                 if min_score is not None and node.score < min_score:
                     continue
-                
+
                 doc = Document(
                     text=node.text,
                     metadata=node.metadata,
                     doc_id=node.id_
                 )
                 documents.append(doc)
-            
+
             logger.info(f"Retrieved {len(documents)} documents for query: '{query}'")
             return documents
-            
+
         except Exception as e:
             logger.error(f"Error retrieving documents: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return []
-    
+
     async def retrieve_with_sources(
         self,
         query: str,
@@ -173,34 +152,22 @@ class QueryEngine:
     ) -> Dict[str, Any]:
         """
         Retrieve documents with source information.
-        
-        Args:
-            query: Query text
-            top_k: Number of results to return
-            min_score: Minimum similarity score
-            
-        Returns:
-            Dictionary with results and sources
         """
         docs = await self.retrieve(query, top_k, min_score)
-        
+
         if not docs:
             return {
                 "query": query,
                 "results": [],
                 "sources": []
             }
-        
-        # Extract unique sources
+
         sources = []
         source_ids = set()
-        
-        # Process documents for result format
         results = []
+
         for doc in docs:
             metadata = doc.metadata
-            
-            # Add to results
             result = {
                 "id": doc.doc_id,
                 "text": doc.text,
@@ -208,82 +175,58 @@ class QueryEngine:
                 "score": metadata.get("score", 0.0)
             }
             results.append(result)
-            
-            # Extract source information
+
             source = metadata.get("source")
             if source and source not in source_ids:
                 source_ids.add(source)
-                
-                # Add source info
                 source_info = {
                     "name": source,
                     "type": metadata.get("source_type", "unknown")
                 }
-                
-                # Add file info if available
+
                 if metadata.get("file_path"):
                     source_info["file_path"] = metadata.get("file_path")
                     source_info["file_type"] = metadata.get("file_type")
-                
+
                 sources.append(source_info)
-        
+
         return {
             "query": query,
             "results": results,
             "sources": sources
         }
-    
+
     def format_retrieved_context(self, results: List[Dict[str, Any]]) -> str:
         """
         Format retrieved documents as context string.
-        
-        Args:
-            results: List of retrieved documents
-            
-        Returns:
-            Formatted context string
         """
         if not results:
             return "No relevant information found."
-        
+
         context_parts = []
-        
+
         for i, doc in enumerate(results):
-            # Extract info
             text = doc["text"]
             score = doc.get("score", 0)
             metadata = doc.get("metadata", {})
             source = metadata.get("source", f"Source {i+1}")
-            
-            # Add to context
+
             context_parts.append(f"[Document {i+1}] Source: {source} (Relevance: {score:.2f})\n{text}")
-        
+
         return "\n\n".join(context_parts)
-    
+
     async def query(self, query_text: str) -> Dict[str, Any]:
         """
         Query the knowledge base using LlamaIndex LLM.
-        
-        Args:
-            query_text: Query text
-            
-        Returns:
-            Dictionary with response and source information
         """
         if not self.is_initialized:
             await self.init()
-        
+
         try:
-            # Create query bundle
             query_bundle = QueryBundle(query_str=query_text)
-            
-            # Run query through the LlamaIndex query engine
             response = self.query_engine.query(query_bundle)
-            
-            # Get source nodes
+
             source_nodes = response.source_nodes if hasattr(response, "source_nodes") else []
-            
-            # Extract source information
             sources = []
             for node in source_nodes:
                 source = {
@@ -292,91 +235,76 @@ class QueryEngine:
                     "metadata": node.metadata
                 }
                 sources.append(source)
-            
-            # Format response
+
             result = {
                 "query": query_text,
                 "response": str(response),
                 "sources": sources
             }
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"Error querying knowledge base: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            
+
             return {
                 "query": query_text,
                 "response": "Error querying knowledge base.",
                 "sources": []
             }
-    
+
     async def query_with_streaming(
-        self, 
+        self,
         query_text: str,
         chat_history: Optional[List[Dict[str, str]]] = None
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Query the knowledge base with streaming response.
-        
-        Args:
-            query_text: Query text
-            chat_history: Optional list of chat messages
-            
-        Returns:
-            Async iterator with streaming response chunks
         """
         if not self.is_initialized:
             await self.init()
-        
+
         try:
-            # Retrieve relevant documents
             retrieval_results = await self.retrieve_with_sources(query_text)
             results = retrieval_results.get("results", [])
-            
-            # Format context
+
             context = self.format_retrieved_context(results)
-            
-            # Create system prompt with context
+
             system_prompt = format_system_prompt(
                 base_prompt="You are an AI assistant that answers questions based on the provided information. If the information doesn't contain the answer, acknowledge this clearly.",
                 retrieved_context=context
             )
-            
-            # Create chat messages
+
             messages = create_chat_messages(
                 system_prompt=system_prompt,
                 user_message=query_text,
                 chat_history=chat_history
             )
-            
-            # Stream response
+
             full_response = ""
-            
+
             try:
-                # Stream response from LLM
                 streaming_response = await self.llm.astream_chat(messages)
-                
+
                 async for chunk in streaming_response:
                     chunk_text = chunk.delta
                     full_response += chunk_text
-                    
+
                     yield {
                         "chunk": chunk_text,
                         "done": False,
                         "sources": retrieval_results.get("sources", [])
                     }
-                
-                # Send final response
+
                 yield {
                     "chunk": "",
                     "full_response": full_response,
                     "done": True,
                     "sources": retrieval_results.get("sources", [])
                 }
-                
+
             except Exception as stream_error:
                 logger.error(f"Error streaming response: {stream_error}")
                 yield {
@@ -384,27 +312,24 @@ class QueryEngine:
                     "done": True,
                     "error": str(stream_error)
                 }
-            
+
         except Exception as e:
             logger.error(f"Error in query_with_streaming: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            
+
             yield {
                 "chunk": "Error processing your query.",
                 "done": True,
                 "error": str(e)
             }
-    
+
     async def get_stats(self) -> Dict[str, Any]:
         """
         Get retriever statistics.
-        
-        Returns:
-            Dictionary with statistics
         """
         doc_count = await self.index_manager.count_documents()
-        
+
         return {
             "document_count": doc_count,
             "top_k": self.top_k,
