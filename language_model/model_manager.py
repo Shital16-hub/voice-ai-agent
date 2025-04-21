@@ -147,12 +147,32 @@ class ModelManager:
         
         # Generate response
         start_time = time.time()
-        response = self.client.generate_chat(
-            messages=self.get_conversation_history(),
-            temperature=temperature,
-            max_tokens=max_tokens,
-            **kwargs
-        )
+        
+        try:
+            # Try chat API first
+            response = self.client.generate_chat(
+                messages=self.get_conversation_history(),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs
+            )
+        except Exception as e:
+            logger.warning(f"Chat API failed, falling back to generate_from_messages: {e}")
+            try:
+                # Fallback to generate_from_messages
+                response = self.client.generate_from_messages(
+                    messages=self.get_conversation_history(),
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs
+                )
+            except Exception as e2:
+                logger.error(f"All methods failed: {e2}")
+                # Last resort fallback
+                response = {
+                    "response": "I'm sorry, but I'm having trouble processing your request right now."
+                }
+        
         generation_time = time.time() - start_time
         
         # Extract and clean response text

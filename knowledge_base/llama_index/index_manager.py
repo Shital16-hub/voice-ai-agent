@@ -67,6 +67,7 @@ class IndexManager:
         try:
             # Import necessary components
             import chromadb
+            from llama_index.core import Settings
             
             # Set up the embedding model
             embed_model = self._embed_model
@@ -75,6 +76,7 @@ class IndexManager:
             
             # Configure global settings
             Settings.embed_model = embed_model
+            Settings.llm = None  # Explicitly disable LLM usage
             
             # Create ChromaDB client
             if self.use_local_storage:

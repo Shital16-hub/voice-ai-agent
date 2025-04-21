@@ -4,6 +4,9 @@ Formatter for model responses to ensure consistent output.
 from typing import Dict, Any, List, Optional, Union
 import json
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ResponseFormatter:
     """
@@ -26,7 +29,22 @@ class ResponseFormatter:
             return response.get("message", {}).get("content", "")
         
         # Handle regular completions
-        return response.get("response", "")
+        if "response" in response:
+            return response.get("response", "")
+        
+        # If we can't find any standard fields, convert the whole response to string
+        logger.warning(f"Could not extract content using standard fields, returning full response")
+        try:
+            if isinstance(response, dict):
+                # Try to find any field that might contain the response
+                for key in ["text", "content", "output", "result", "generated_text"]:
+                    if key in response and isinstance(response[key], str):
+                        return response[key]
+        except Exception:
+            pass
+        
+        # Last resort: convert whole response to string
+        return str(response)
     
     @staticmethod
     def extract_json(text: str) -> Optional[Dict[str, Any]]:

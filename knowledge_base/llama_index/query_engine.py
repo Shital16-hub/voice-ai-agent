@@ -1,3 +1,4 @@
+
 """
 Query engine for retrieving information from the vector index.
 """
@@ -8,6 +9,7 @@ from llama_index.core.schema import Node, QueryBundle
 from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.core.response_synthesizers import get_response_synthesizer
+from llama_index.core import Settings
 
 from knowledge_base.config import get_retriever_config
 from knowledge_base.llama_index.index_manager import IndexManager
@@ -46,33 +48,35 @@ class QueryEngine:
     async def init(self):
         """Initialize the query engine."""
         if self.is_initialized:
-
             return
-    
+        
         # Ensure index manager is initialized
         if not self.index_manager.is_initialized:
             await self.index_manager.init()
-    
+        
+        # Make sure Settings.llm is None to avoid dependency on OpenAI
+        Settings.llm = None
+        
         # Create retriever
         self.retriever = VectorIndexRetriever(
-        index=self.index_manager.index,
-        similarity_top_k=self.top_k,
-        filters=None
+            index=self.index_manager.index,
+            similarity_top_k=self.top_k,
+            filters=None
         )
-    
+        
         # Create response synthesizer without an LLM
         from llama_index.core.response_synthesizers import ResponseMode
         response_synthesizer = get_response_synthesizer(
             response_mode=ResponseMode.NO_TEXT,
             llm=None  # Explicitly set to None to avoid OpenAI dependency
         )
-    
-    # Create query engine
+        
+        # Create query engine
         self.query_engine = RetrieverQueryEngine(
             retriever=self.retriever,
             response_synthesizer=response_synthesizer
         )
-    
+        
         self.is_initialized = True
         logger.info("Query engine initialized")
     
@@ -141,6 +145,8 @@ class QueryEngine:
             import traceback
             logger.error(traceback.format_exc())
             return []
+    
+    
     
     async def retrieve_with_sources(
         self,

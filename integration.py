@@ -4,12 +4,10 @@ Integration layer between knowledge base and language model.
 import logging
 import asyncio
 from typing import Dict, List, Any, Optional
-
 from language_model.model_manager import ModelManager
 from knowledge_base.llama_index.query_engine import QueryEngine
 from knowledge_base.llama_index.index_manager import IndexManager
 from knowledge_base.conversation_manager import ConversationManager
-
 logger = logging.getLogger(__name__)
 
 class VoiceAssistantIntegration:
@@ -83,6 +81,7 @@ class VoiceAssistantIntegration:
         
         logger.info("Initialized VoiceAssistantIntegration")
     
+    # Update the init method in integration.py
     async def init(self):
         """Initialize all components."""
         # Initialize index manager
@@ -93,6 +92,12 @@ class VoiceAssistantIntegration:
         
         # Initialize conversation manager
         await self.conversation_manager.init()
+        
+        # Verify that LlamaIndex settings are properly configured
+        from llama_index.core import Settings
+        if Settings.llm is not None:
+            logger.warning("LlamaIndex Settings.llm is not None, setting to None to avoid OpenAI dependency")
+            Settings.llm = None
         
         logger.info("All components initialized")
     
