@@ -77,6 +77,16 @@ def get_ollama_llm(
     }
     
     try:
+        # Check if model exists
+        import requests
+        model_check = requests.post(f"{base_url}/api/show", json={"name": model})
+        if model_check.status_code != 200:
+            # Model doesn't exist, try to pull it
+            logger.warning(f"Model {model} not found locally. Attempting to pull...")
+            pull_response = requests.post(f"{base_url}/api/pull", json={"name": model})
+            if pull_response.status_code != 200:
+                raise ValueError(f"Failed to pull model {model}. Please pull it manually.")
+            
         # Initialize Ollama LLM
         ollama_llm = Ollama(
             model=model,

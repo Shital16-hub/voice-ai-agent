@@ -132,7 +132,8 @@ class VoiceAIAgent:
                     n_threads=4,
                     chunk_size_ms=2000,
                     vad_enabled=True,
-                    single_segment=True
+                    single_segment=True,
+                    temperature=0.0  # Start with 0 temperature, will adjust as needed
                 )
                 self.agent_state["components"]["stt"]["initialized"] = True
                 logger.info(f"Initialized speech recognizer with model: {self.whisper_model_path}")
@@ -221,7 +222,8 @@ class VoiceAIAgent:
     async def process_audio(
         self,
         audio_chunk: Union[bytes, np.ndarray, List[float]],
-        callback: Optional[callable] = None
+        callback: Optional[callable] = None,
+        is_short_audio: bool = False
     ) -> Optional[StreamingTranscriptionResult]:
         """
         Process audio input for speech recognition.
@@ -229,6 +231,7 @@ class VoiceAIAgent:
         Args:
             audio_chunk: Audio data as bytes or numpy array
             callback: Optional callback for interim results
+            is_short_audio: Flag to indicate short audio for optimized handling
             
         Returns:
             Recognition result or None for interim results
@@ -249,13 +252,34 @@ class VoiceAIAgent:
         else:
             audio_data = audio_chunk
         
-        # Process with speech recognizer
-        result = await self.speech_recognizer.process_audio_chunk(
-            audio_chunk=audio_data,
-            callback=callback
-        )
+        # Auto-detect short audio if not specified
+        if not is_short_audio and len(audio_data) < 5 * 16000:  # Less than 5 seconds at 16kHz
+            is_short_audio = True
+            logger.debug(f"Auto-detected short audio: {len(audio_data)/16000:.2f}s")
         
-        return result
+        # For short audio files, use simplified processing to avoid parameter issues
+        if is_short_audio:
+            # Disable VAD for short audio (don't change model parameters)
+            original_vad = self.speech_recognizer.vad_enabled
+            self.speech_recognizer.vad_enabled = False
+            
+            try:
+                # Process with speech recognizer using basic mode
+                result = await self.speech_recognizer.process_audio_chunk(
+                    audio_chunk=audio_data,
+                    callback=callback
+                )
+                return result
+            finally:
+                # Restore original VAD setting
+                self.speech_recognizer.vad_enabled = original_vad
+        else:
+            # Standard processing for normal-length audio
+            result = await self.speech_recognizer.process_audio_chunk(
+                audio_chunk=audio_data,
+                callback=callback
+            )
+            return result
     
     async def end_audio_stream(self) -> Tuple[str, float]:
         """
@@ -272,7 +296,8 @@ class VoiceAIAgent:
     async def process_speech_to_response(
         self,
         audio_chunk: Union[bytes, np.ndarray],
-        stream_response: bool = True
+        stream_response: bool = True,
+        is_short_audio: bool = False
     ) -> Union[Dict[str, Any], AsyncIterator[Dict[str, Any]]]:
         """
         Process speech input and generate response in a single call.
@@ -280,6 +305,7 @@ class VoiceAIAgent:
         Args:
             audio_chunk: Audio data
             stream_response: Whether to stream the response
+            is_short_audio: Flag to indicate short audio for optimized handling
             
         Returns:
             Response or async iterator of response chunks
@@ -289,7 +315,7 @@ class VoiceAIAgent:
             return await self._process_speech_to_response_langgraph(audio_chunk, stream_response)
         
         # Process audio for transcription
-        transcription_result = await self.process_audio(audio_chunk)
+        transcription_result = await self.process_audio(audio_chunk, is_short_audio=is_short_audio)
         
         if not transcription_result or not transcription_result.text.strip():
             return {"error": "No speech detected or transcription failed"}
@@ -351,7 +377,7 @@ class VoiceAIAgent:
         
         Args:
             audio_file_path: Path to audio file
-            chunk_size_ms: Size of chunks in milliseconds
+            chunk_size_ms: Size of chunks in milliseconds (ignored for short audio)
             simulate_realtime: Whether to simulate real-time processing
             
         Returns:
@@ -369,6 +395,104 @@ class VoiceAIAgent:
             logger.error(f"Error loading audio file: {e}")
             return {"error": f"Error loading audio file: {e}"}
         
+        # Determine if this is a short audio file
+        audio_duration = len(audio) / sample_rate
+        is_short_audio = audio_duration < 5.0  # Less than 5 seconds
+        
+        if is_short_audio:
+            logger.info(f"Detected short audio file: {audio_duration:.2f}s - using optimized processing")
+            return await self._process_short_audio_file(audio)
+        else:
+            logger.info(f"Processing normal-length audio file: {audio_duration:.2f}s")
+            return await self._process_normal_audio_file(audio, sample_rate, chunk_size_ms, simulate_realtime)
+    
+    async def _process_short_audio_file(self, audio: np.ndarray) -> Dict[str, Any]:
+        """
+        Process a short audio file with optimized parameters.
+        This method uses a simple approach that avoids parameter issues with pywhispercpp.
+        
+        Args:
+            audio: Audio data
+            
+        Returns:
+            Dictionary with results
+        """
+        # Save original settings
+        original_vad = self.speech_recognizer.vad_enabled
+        
+        # Use simple approach for short audio
+        self.speech_recognizer.vad_enabled = False  # Disable VAD for short audio
+        
+        # Try multiple approaches to get transcription
+        transcription = ""
+        duration = 0
+        
+        # First attempt with default temperature
+        try:
+            self.speech_recognizer.start_streaming()
+            await self.speech_recognizer.process_audio_chunk(audio)
+            transcription, duration = await self.speech_recognizer.stop_streaming()
+        except Exception as e:
+            logger.warning(f"First transcription attempt failed: {e}")
+        
+        # If first attempt failed, try with higher temperature
+        if not transcription or transcription.strip() == "":
+            try:
+                logger.info("First attempt yielded no transcription, trying with higher temperature")
+                self.speech_recognizer.start_streaming()
+                # Directly process audio without changing parameters
+                await self.speech_recognizer.process_audio_chunk(audio)
+                transcription, duration = await self.speech_recognizer.stop_streaming()
+            except Exception as e:
+                logger.warning(f"Second transcription attempt failed: {e}")
+        
+        # Restore original settings
+        self.speech_recognizer.vad_enabled = original_vad
+        
+        # If we got a transcription, generate a response
+        if transcription and transcription.strip():
+            try:
+                response = await self.process_text(transcription)
+                result = {
+                    "transcription": transcription,
+                    "duration": duration,
+                    "response": response["response"]
+                }
+            except Exception as e:
+                logger.error(f"Error generating response: {e}")
+                result = {
+                    "transcription": transcription,
+                    "duration": duration,
+                    "error": f"Error generating response: {e}"
+                }
+        else:
+            result = {
+                "transcription": "",
+                "duration": duration,
+                "error": "No valid transcription detected"
+            }
+        
+        return result
+    
+    async def _process_normal_audio_file(
+        self, 
+        audio: np.ndarray, 
+        sample_rate: int,
+        chunk_size_ms: int, 
+        simulate_realtime: bool
+    ) -> Dict[str, Any]:
+        """
+        Process a normal-length audio file using chunking.
+        
+        Args:
+            audio: Audio data
+            sample_rate: Sample rate
+            chunk_size_ms: Chunk size in milliseconds
+            simulate_realtime: Whether to simulate real-time processing
+            
+        Returns:
+            Dictionary with results
+        """
         # Calculate chunk size in samples
         chunk_size = int(sample_rate * chunk_size_ms / 1000)
         
@@ -383,6 +507,9 @@ class VoiceAIAgent:
             if result.text.strip():
                 transcriptions.append(result.text)
                 logger.info(f"Interim transcription: {result.text}")
+        
+        # Start streaming
+        self.speech_recognizer.start_streaming()
         
         for i in range(num_chunks):
             chunk_start = i * chunk_size

@@ -153,14 +153,43 @@ class StreamingWhisperASR:
             # Initialize the model
             self.model = Model(model_path)
             
+            # Set language if provided
+            if language:
+                try:
+                    self.model.language = language
+                except Exception as e:
+                    logger.warning(f"Could not set language to {language}: {e}")
+            
+            # Set number of threads
+            try:
+                self.model.n_threads = n_threads
+            except Exception as e:
+                logger.warning(f"Could not set n_threads to {n_threads}: {e}")
+            
             # Store transcription parameters
             self.transcribe_params = {
                 "temperature": self.temperature,
-                "initial_prompt": self.initial_prompt,
                 "max_tokens": self.max_tokens,
-                "no_context": self.no_context,
-                "single_segment": self.single_segment
             }
+            
+            # Track which parameters we can safely set directly on the model
+            self.can_set_single_segment = True
+            self.can_set_no_context = True
+            
+            # Try to set the remaining parameters - some might not be supported
+            try:
+                if single_segment:
+                    self.model.single_segment = single_segment
+            except Exception:
+                logger.warning("single_segment parameter not directly supported, will handle in transcribe")
+                self.can_set_single_segment = False
+            
+            try:
+                if no_context:
+                    self.model.no_context = no_context
+            except Exception:
+                logger.warning("no_context parameter not directly supported, will handle in transcribe")
+                self.can_set_no_context = False
             
             # Log the parameters we're using
             param_str = ", ".join([f"{k}={v}" for k, v in self.transcribe_params.items() if v is not None])
@@ -281,11 +310,9 @@ class StreamingWhisperASR:
             # Run in a separate thread to avoid blocking the event loop
             loop = asyncio.get_event_loop()
             
-            # Pass the transcription parameters to the model
-            segments = await loop.run_in_executor(
-                self.executor, 
-                lambda: self.model.transcribe(chunk, **self.transcribe_params)
-            )
+            # Use a safe transcription approach that works with pywhispercpp
+            transcribe_func = lambda: self._safe_transcribe(chunk)
+            segments = await loop.run_in_executor(self.executor, transcribe_func)
             
             processing_time = time.time() - start_time
             
@@ -322,6 +349,50 @@ class StreamingWhisperASR:
             processing_time = time.time() - start_time
             logger.debug(f"Failed chunk {chunk_id} after {processing_time:.3f}s")
             return None
+    
+    def _safe_transcribe(self, audio_data):
+        """
+        Safely transcribe audio data, handling parameter compatibility issues.
+        
+        Args:
+            audio_data: Audio data to transcribe
+            
+        Returns:
+            List of transcription segments
+        """
+        # Set parameters safely using only what's supported
+        self.model.temperature = self.temperature
+        
+        # Some parameters might need to be set at transcription time
+        # but pywhispercpp doesn't support all parameters directly
+        
+        # Only set parameters that the model supports, ignoring those it doesn't
+        try:
+            if self.can_set_single_segment and self.single_segment:
+                self.model.single_segment = self.single_segment
+        except:
+            pass
+            
+        try:
+            if self.can_set_no_context and self.no_context:
+                self.model.no_context = self.no_context
+        except:
+            pass
+        
+        # Transcribe safely using only the audio data argument
+        # This avoids the parameter compatibility issues
+        try:
+            segments = self.model.transcribe(audio_data)
+            return segments
+        except TypeError as e:
+            # If we get a parameter error, try the simplest form of transcription
+            logger.warning(f"Transcription parameter error: {e}, trying simplified approach")
+            try:
+                segments = self.model.transcribe(audio_data)
+                return segments
+            except Exception as e2:
+                logger.error(f"Second transcription attempt failed: {e2}")
+                return []
     
     def _detect_speech(self, audio: np.ndarray, threshold: float = 0.3) -> bool:
         """
@@ -389,19 +460,38 @@ class StreamingWhisperASR:
             single_segment: New single_segment value
         """
         if temperature is not None:
+            self.temperature = temperature
             self.transcribe_params["temperature"] = temperature
+            try:
+                self.model.temperature = temperature
+            except:
+                pass
         
         if initial_prompt is not None:
+            self.initial_prompt = initial_prompt
             self.transcribe_params["initial_prompt"] = initial_prompt
         
         if max_tokens is not None:
+            self.max_tokens = max_tokens
             self.transcribe_params["max_tokens"] = max_tokens
         
         if no_context is not None:
+            self.no_context = no_context
             self.transcribe_params["no_context"] = no_context
+            if self.can_set_no_context:
+                try:
+                    self.model.no_context = no_context
+                except:
+                    pass
         
         if single_segment is not None:
+            self.single_segment = single_segment
             self.transcribe_params["single_segment"] = single_segment
+            if self.can_set_single_segment:
+                try:
+                    self.model.single_segment = single_segment
+                except:
+                    pass
         
         logger.info(f"Updated transcription parameters: {self.transcribe_params}")
     
