@@ -1,35 +1,50 @@
 # Core dependencies
-aiohttp
-numpy
-pydantic
-typing-extensions
-asyncio
+numpy>=1.23.0
+pydantic>=2.0.0
+asyncio>=3.4.3
+aiohttp>=3.8.0
+soundfile>=0.12.0
+sounddevice>=0.4.5
+librosa>=0.10.0
 
-# LlamaIndex dependencies
-llama-index
-llama-index-llms-ollama
-llama-index-embeddings-huggingface
-llama-index-vector-stores-chroma
+# Speech recognition dependencies
+openai-whisper>=20231117
+# Alternative to pywhispercpp which has better compatibility
+whisper-cpp-python>=0.0.2
 
-# Speech-to-Text dependencies
-pywhispercpp
-soundfile
+# Text-to-speech dependencies
+TTS>=0.17.0
+
+# LLM and RAG dependencies without tensorrt_llm
+llama-index==0.9.27  # Pin to a specific version before tensorrt_llm requirement
+# Use the extension modules explicitly
+llama-index-embeddings-huggingface>=0.1.0
+llama-index-vector-stores-chroma>=0.1.0
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+
+# LangGraph dependencies
+langgraph>=0.0.36
+langchain>=0.1.0
+langchain-community>=0.0.10
+
 # Document processing
-python-docx
-pdfplumber
-PyMuPDF
-beautifulsoup4
-pandas
-openpyxl
-# Embedding models
-sentence-transformers
+python-docx>=0.8.11
+pdfplumber>=0.10.0
+PyMuPDF>=1.22.0
+beautifulsoup4>=4.12.0
+pandas>=2.0.0
+openpyxl>=3.1.0
 
-# Vector Database
-chromadb
+# Optional dependencies
+pytest>=7.0.0
+prometheus-client>=0.17.0
 
-# Optional utilities
-spacy
-langdetect
+# Additional dependencies for FreeSWITCH integration
+# If you need to interact with FreeSWITCH ESL
+pyfreeswitch>=0.3.0
 
-# Testing
-pytest
+# For Ollama/vLLM integration
+ollama>=0.1.0
+fastapi>=0.104.0
+uvicorn>=0.24.0

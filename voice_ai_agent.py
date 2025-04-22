@@ -453,6 +453,7 @@ class VoiceAIAgent:
     ) -> Dict[str, Any]:
         """
         Process audio and stream the response directly to text-to-speech with minimal latency.
+        Optimized for real-time word-by-word output.
         
         Args:
             audio_file_path: Path to audio file
@@ -518,7 +519,8 @@ class VoiceAIAgent:
                 # Add to full response
                 full_response += chunk_text
                 
-                # Send this chunk immediately to the TTS system
+                # Send chunk immediately to TTS without any batching or delay
+                # This ensures minimum latency between generation and vocalization
                 await tts_callback(chunk_text)
                 total_chunks += 1
                 
@@ -550,6 +552,7 @@ class VoiceAIAgent:
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Process real-time audio stream and generate streaming responses for TTS.
+        Optimized for word-by-word output to TTS with minimal latency.
         
         This method supports true real-time continuous conversation.
         
@@ -609,10 +612,11 @@ class VoiceAIAgent:
                         # Start a new streaming response
                         response_start = time.time()
                         
-                        # Stream response directly to TTS
+                        # Stream response directly to TTS with minimum latency
                         async for chunk in self.query_engine.query_with_streaming(transcription):
                             chunk_text = chunk.get("chunk", "")
                             if chunk_text:
+                                # Send each chunk immediately to TTS without any batching
                                 await tts_callback(chunk_text)
                         
                         response_time = time.time() - response_start

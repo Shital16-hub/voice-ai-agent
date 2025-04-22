@@ -262,21 +262,24 @@ class QueryEngine:
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Query the knowledge base with streaming response.
+        Optimized for real-time word-by-word output to TTS.
         """
         if not self.is_initialized:
             await self.init()
 
         try:
+            # Retrieve relevant context
             retrieval_results = await self.retrieve_with_sources(query_text)
             results = retrieval_results.get("results", [])
-
             context = self.format_retrieved_context(results)
 
+            # Format system prompt with context
             system_prompt = format_system_prompt(
                 base_prompt="You are an AI assistant that answers questions based on the provided information. If the information doesn't contain the answer, acknowledge this clearly.",
                 retrieved_context=context
             )
 
+            # Create messages
             messages = create_chat_messages(
                 system_prompt=system_prompt,
                 user_message=query_text,
@@ -286,18 +289,26 @@ class QueryEngine:
             full_response = ""
 
             try:
+                # Stream response in smallest possible chunks for immediate TTS processing
                 streaming_response = await self.llm.astream_chat(messages)
-
+                
                 async for chunk in streaming_response:
-                    chunk_text = chunk.delta
-                    full_response += chunk_text
+                    # Get just the text delta/chunk - this is typically word by word or smaller
+                    chunk_text = chunk.delta if hasattr(chunk, 'delta') else chunk.content
+                    
+                    # Only process non-empty chunks
+                    if chunk_text:
+                        full_response += chunk_text
+                        
+                        # Immediately yield each chunk for real-time TTS processing
+                        # No batching or delaying of chunks
+                        yield {
+                            "chunk": chunk_text,
+                            "done": False,
+                            "sources": retrieval_results.get("sources", [])
+                        }
 
-                    yield {
-                        "chunk": chunk_text,
-                        "done": False,
-                        "sources": retrieval_results.get("sources", [])
-                    }
-
+                # Final completion signal with full response for reference
                 yield {
                     "chunk": "",
                     "full_response": full_response,
@@ -312,12 +323,12 @@ class QueryEngine:
                     "done": True,
                     "error": str(stream_error)
                 }
-
+        
         except Exception as e:
             logger.error(f"Error in query_with_streaming: {e}")
             import traceback
             logger.error(traceback.format_exc())
-
+            
             yield {
                 "chunk": "Error processing your query.",
                 "done": True,
