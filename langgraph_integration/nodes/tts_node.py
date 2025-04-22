@@ -81,6 +81,9 @@ class TTSNode:
                 yield state
                 return
             
+            # Log the response being converted to speech
+            logger.info(f"Converting response to speech: '{state.response[:100]}...'")
+            
             # Convert response to speech
             speech_data = await self.tts.text_to_speech(state.response)
             
@@ -108,6 +111,9 @@ class TTSNode:
             
             # Save timing information
             state.timings["tts"] = time.time() - start_time
+            
+            # Debug log the state after processing
+            logger.info(f"TTS processing complete. Generated {len(speech_data)} bytes of audio")
             
         except Exception as e:
             logger.error(f"Error in TTS node: {e}")

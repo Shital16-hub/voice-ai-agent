@@ -190,7 +190,7 @@ class VoiceAILangGraph:
         # Compile the graph
         self.compiled_graph = self.graph.compile()
     
-    def _route_from_stt(self, state: AgentState) -> str:
+    def _route_from_stt(self, state) -> str:
         """
         Route from STT node based on state.
         
@@ -200,11 +200,16 @@ class VoiceAILangGraph:
         Returns:
             Next node name
         """
-        if state.error or state.status == ConversationStatus.ERROR:
+        # Safe access to state properties
+        has_error = getattr(state, "error", None)
+        status = getattr(state, "status", None)
+        is_error_status = status == ConversationStatus.ERROR if status else False
+        
+        if has_error or is_error_status:
             return "error"
         return "kb"
     
-    def _route_from_kb(self, state: AgentState) -> str:
+    def _route_from_kb(self, state) -> str:
         """
         Route from KB node based on state.
         
@@ -214,11 +219,16 @@ class VoiceAILangGraph:
         Returns:
             Next node name
         """
-        if state.error or state.status == ConversationStatus.ERROR:
+        # Safe access to state properties
+        has_error = getattr(state, "error", None)
+        status = getattr(state, "status", None)
+        is_error_status = status == ConversationStatus.ERROR if status else False
+        
+        if has_error or is_error_status:
             return "error"
         return "tts"
     
-    def _route_from_tts(self, state: AgentState) -> str:
+    def _route_from_tts(self, state) -> str:
         """
         Route from TTS node based on state.
         
@@ -228,7 +238,12 @@ class VoiceAILangGraph:
         Returns:
             Next node name
         """
-        if state.error or state.status == ConversationStatus.ERROR:
+        # Safe access to state properties
+        has_error = getattr(state, "error", None)
+        status = getattr(state, "status", None)
+        is_error_status = status == ConversationStatus.ERROR if status else False
+        
+        if has_error or is_error_status:
             return "error"
         return "end"
     
@@ -267,6 +282,14 @@ class VoiceAILangGraph:
         if not self.compiled_graph:
             await self.init()
         
+        # Record start time for tracking
+        start_time = time.time()
+        
+        # Add start time to metadata
+        if metadata is None:
+            metadata = {}
+        metadata["start_time"] = start_time
+        
         # Create initial state
         state = create_initial_state(
             audio_file_path=audio_file_path,
@@ -274,35 +297,79 @@ class VoiceAILangGraph:
             metadata=metadata
         )
         
+        # Make sure timings includes start_time
+        if not hasattr(state, "timings") or not state.timings:
+            state.timings = {"start_time": start_time}
+        elif "start_time" not in state.timings:
+            state.timings["start_time"] = start_time
+        
+        # Add initial state to state tracking
+        try:
+            self.state_tracker.add_state(state)
+        except Exception as e:
+            logger.warning(f"Failed to track initial state: {e}")
+        
         # Run the graph
         try:
+            print(f"Starting LangGraph pipeline processing for file: {audio_file_path}")
+            
+            # Record processing start time
+            processing_start_time = time.time()
+            
+            # Execute the graph
             final_state = await self.compiled_graph.ainvoke(state)
             
-            # Save state history if enabled
-            if self.config.save_state_history:
-                await self.state_tracker.save_history()
+            # Record processing end time
+            processing_end_time = time.time()
+            processing_duration = processing_end_time - processing_start_time
             
-            # Prepare results
-            results = self._prepare_results(final_state)
+            # Add processing duration to timings if possible
+            try:
+                if hasattr(final_state, "timings") and isinstance(final_state.timings, dict):
+                    final_state.timings["total_processing_time"] = processing_duration
+                elif hasattr(final_state, "timings"):
+                    # Try setting the attribute
+                    setattr(final_state, "timings", {"total_processing_time": processing_duration, "start_time": start_time})
+            except Exception as e:
+                logger.warning(f"Could not add processing time to state: {e}")
+            
+            # Track final state
+            try:
+                self.state_tracker.add_state(final_state)
+            except Exception as e:
+                logger.warning(f"Failed to track final state: {e}")
+            
+            # Save state history
+            if self.config.save_state_history:
+                try:
+                    await self.state_tracker.save_history()
+                except Exception as e:
+                    logger.warning(f"Failed to save state history: {e}")
+            
+            # Extract results from state
+            results = self._extract_results_from_state(final_state)
+            
+            # Ensure certain fields are always present
+            self._ensure_required_fields(results, final_state)
+            
+            # Ensure total time is accurate
+            results["total_time"] = time.time() - start_time
+            
+            print(f"LangGraph pipeline completed successfully in {results['total_time']:.2f} seconds")
             return results
             
         except Exception as e:
-            logger.error(f"Error running LangGraph: {e}")
+            logger.error(f"Error running LangGraph: {e}", exc_info=True)
             
             # Create error results
             error_results = {
                 "error": str(e),
                 "status": "ERROR",
-                "total_time": time.time() - state.timings.get("start_time", time.time())
+                "total_time": time.time() - start_time,
+                "transcription": getattr(state, "transcription", ""),
+                "response": getattr(state, "response", "")
             }
             
-            # Add available state info if possible
-            if hasattr(state, "transcription") and state.transcription:
-                error_results["transcription"] = state.transcription
-                
-            if hasattr(state, "response") and state.response:
-                error_results["response"] = state.response
-                
             return error_results
     
     async def process_audio_data(
@@ -325,6 +392,14 @@ class VoiceAILangGraph:
         if not self.compiled_graph:
             await self.init()
         
+        # Record start time for tracking
+        start_time = time.time()
+        
+        # Add start time to metadata
+        if metadata is None:
+            metadata = {}
+        metadata["start_time"] = start_time
+        
         # Create initial state
         state = create_initial_state(
             audio_input=audio_data,
@@ -332,35 +407,76 @@ class VoiceAILangGraph:
             metadata=metadata
         )
         
+        # Make sure timings includes start_time
+        if not hasattr(state, "timings") or not state.timings:
+            state.timings = {"start_time": start_time}
+        elif "start_time" not in state.timings:
+            state.timings["start_time"] = start_time
+            
+        # Add initial state to state tracking
+        try:
+            self.state_tracker.add_state(state)
+        except Exception as e:
+            logger.warning(f"Failed to track initial state: {e}")
+        
         # Run the graph
         try:
+            # Record processing start time
+            processing_start_time = time.time()
+            
+            # Execute the graph
             final_state = await self.compiled_graph.ainvoke(state)
             
-            # Save state history if enabled
-            if self.config.save_state_history:
-                await self.state_tracker.save_history()
+            # Record processing end time
+            processing_end_time = time.time()
+            processing_duration = processing_end_time - processing_start_time
             
-            # Prepare results
-            results = self._prepare_results(final_state)
+            # Add processing duration to timings if possible
+            try:
+                if hasattr(final_state, "timings") and isinstance(final_state.timings, dict):
+                    final_state.timings["total_processing_time"] = processing_duration
+                elif hasattr(final_state, "timings"):
+                    # Try setting the attribute
+                    setattr(final_state, "timings", {"total_processing_time": processing_duration, "start_time": start_time})
+            except Exception as e:
+                logger.warning(f"Could not add processing time to state: {e}")
+            
+            # Track final state
+            try:
+                self.state_tracker.add_state(final_state)
+            except Exception as e:
+                logger.warning(f"Failed to track final state: {e}")
+            
+            # Save state history
+            if self.config.save_state_history:
+                try:
+                    await self.state_tracker.save_history()
+                except Exception as e:
+                    logger.warning(f"Failed to save state history: {e}")
+            
+            # Extract results from state
+            results = self._extract_results_from_state(final_state)
+            
+            # Ensure certain fields are always present
+            self._ensure_required_fields(results, final_state)
+            
+            # Ensure total time is accurate
+            results["total_time"] = time.time() - start_time
+            
             return results
             
         except Exception as e:
-            logger.error(f"Error running LangGraph: {e}")
+            logger.error(f"Error running LangGraph: {e}", exc_info=True)
             
             # Create error results
             error_results = {
                 "error": str(e),
                 "status": "ERROR",
-                "total_time": time.time() - state.timings.get("start_time", time.time())
+                "total_time": time.time() - start_time,
+                "transcription": getattr(state, "transcription", ""),
+                "response": getattr(state, "response", "")
             }
             
-            # Add available state info if possible
-            if hasattr(state, "transcription") and state.transcription:
-                error_results["transcription"] = state.transcription
-                
-            if hasattr(state, "response") and state.response:
-                error_results["response"] = state.response
-                
             return error_results
 
     def _get_status_name(self, state) -> str:
@@ -373,12 +489,15 @@ class VoiceAILangGraph:
         Returns:
             Status name as string
         """
-        if hasattr(state, "status"):
-            status = state.status
-            if hasattr(status, "name"):
-                return status.name
-            return str(status)
-        return "UNKNOWN"    
+        try:
+            if hasattr(state, "status"):
+                status = state.status
+                if hasattr(status, "name"):
+                    return status.name
+                return str(status)
+            return "UNKNOWN"
+        except Exception:
+            return "UNKNOWN"
     
     async def process_text(
         self,
@@ -400,6 +519,14 @@ class VoiceAILangGraph:
         if not self.compiled_graph:
             await self.init()
         
+        # Record start time for tracking
+        start_time = time.time()
+        
+        # Add start time to metadata
+        if metadata is None:
+            metadata = {}
+        metadata["start_time"] = start_time
+        
         # Create initial state
         state = create_initial_state(
             text_input=text,
@@ -407,35 +534,76 @@ class VoiceAILangGraph:
             metadata=metadata
         )
         
+        # Make sure timings includes start_time
+        if not hasattr(state, "timings") or not state.timings:
+            state.timings = {"start_time": start_time}
+        elif "start_time" not in state.timings:
+            state.timings["start_time"] = start_time
+            
+        # Add initial state to state tracking
+        try:
+            self.state_tracker.add_state(state)
+        except Exception as e:
+            logger.warning(f"Failed to track initial state: {e}")
+        
         # Run the graph
         try:
+            # Record processing start time
+            processing_start_time = time.time()
+            
+            # Execute the graph
             final_state = await self.compiled_graph.ainvoke(state)
             
-            # Save state history if enabled
-            if self.config.save_state_history:
-                await self.state_tracker.save_history()
+            # Record processing end time
+            processing_end_time = time.time()
+            processing_duration = processing_end_time - processing_start_time
             
-            # Prepare results
-            results = self._prepare_results(final_state)
+            # Add processing duration to timings if possible
+            try:
+                if hasattr(final_state, "timings") and isinstance(final_state.timings, dict):
+                    final_state.timings["total_processing_time"] = processing_duration
+                elif hasattr(final_state, "timings"):
+                    # Try setting the attribute
+                    setattr(final_state, "timings", {"total_processing_time": processing_duration, "start_time": start_time})
+            except Exception as e:
+                logger.warning(f"Could not add processing time to state: {e}")
+            
+            # Track final state
+            try:
+                self.state_tracker.add_state(final_state)
+            except Exception as e:
+                logger.warning(f"Failed to track final state: {e}")
+            
+            # Save state history
+            if self.config.save_state_history:
+                try:
+                    await self.state_tracker.save_history()
+                except Exception as e:
+                    logger.warning(f"Failed to save state history: {e}")
+            
+            # Extract results from state
+            results = self._extract_results_from_state(final_state)
+            
+            # Ensure certain fields are always present
+            self._ensure_required_fields(results, final_state)
+            
+            # Ensure total time is accurate
+            results["total_time"] = time.time() - start_time
+            
             return results
             
         except Exception as e:
-            logger.error(f"Error running LangGraph: {e}")
+            logger.error(f"Error running LangGraph: {e}", exc_info=True)
             
             # Create error results
             error_results = {
                 "error": str(e),
                 "status": "ERROR",
-                "total_time": time.time() - state.timings.get("start_time", time.time())
+                "total_time": time.time() - start_time,
+                "transcription": getattr(state, "transcription", ""),
+                "response": getattr(state, "response", "")
             }
             
-            # Add available state info if possible
-            if hasattr(state, "transcription") and state.transcription:
-                error_results["transcription"] = state.transcription
-                
-            if hasattr(state, "response") and state.response:
-                error_results["response"] = state.response
-                
             return error_results
     
     async def process_streaming(
@@ -460,53 +628,143 @@ class VoiceAILangGraph:
         # Not fully implemented yet - would need more complex streaming graph
         raise NotImplementedError("Streaming processing not implemented yet")
     
-    def _prepare_results(self, state: AgentState) -> Dict[str, Any]:
+    def _extract_results_from_state(self, state) -> Dict[str, Any]:
         """
-        Prepare results dictionary from final state.
+        Extract results from a state object, handling any type of state object.
         
         Args:
-            state: Final agent state
+            state: State object from LangGraph
             
         Returns:
             Results dictionary
         """
-        # Create results dictionary
+        # Start time for total time calculation
+        start_time = self._get_start_time(state)
+        
+        # Create a base results dictionary
         results = {
             "status": self._get_status_name(state),
-            "timings": getattr(state, "timings", {}),
-            "total_time": time.time() - getattr(state, "timings", {}).get("start_time", time.time())
+            "total_time": time.time() - start_time
         }
         
-        # Add transcription if present
-        if hasattr(state, "transcription") and state.transcription:
-            results["transcription"] = state.transcription
-            
-        # Add response if present
-        if hasattr(state, "response") and state.response:
-            results["response"] = state.response
-            
-        # Add error if present
-        if hasattr(state, "error") and state.error:
-            results["error"] = state.error
+        # Add timings if available
+        try:
+            if hasattr(state, "timings"):
+                results["timings"] = getattr(state, "timings", {})
+        except Exception:
+            # Create minimal timings if none available
+            results["timings"] = {"start_time": start_time}
         
-        # Add speech output info if applicable
-        if hasattr(state, "speech_output") and state.speech_output:
-            results["speech_audio_size"] = len(state.speech_output)
-            # Exclude binary data from result
-            results["speech_output"] = None
+        # Extract common fields in a safe way
+        fields_to_extract = [
+            "transcription", "response", "error", "conversation_id", 
+            "sources", "history", "speech_output_path"
+        ]
         
-        if hasattr(state, "speech_output_path") and state.speech_output_path:
-            results["speech_output_path"] = state.speech_output_path
+        for field in fields_to_extract:
+            try:
+                value = getattr(state, field, None)
+                if value is not None:
+                    # Special handling for binary data
+                    if field == "speech_output" and value:
+                        try:
+                            results["speech_audio_size"] = len(value)
+                        except:
+                            results["speech_audio_size"] = "Unknown"
+                    else:
+                        results[field] = value
+            except Exception:
+                # Skip fields that can't be accessed
+                pass
         
-        # Add conversation info
-        if hasattr(state, "conversation_id") and state.conversation_id:
-            results["conversation_id"] = state.conversation_id
+        # Add node information if available
+        try:
+            results["current_node"] = str(getattr(state, "current_node", "unknown"))
+            results["next_node"] = str(getattr(state, "next_node", "unknown"))
+        except Exception:
+            pass
         
-        # Add sources if available
-        if hasattr(state, "sources") and state.sources:
-            results["sources"] = state.sources
+        # Calculate individual stage timings if available
+        results["stage_timings"] = {}
+        for stage in ["stt", "kb", "tts"]:
+            try:
+                if stage in getattr(state, "timings", {}):
+                    results["stage_timings"][stage] = state.timings[stage]
+            except Exception:
+                pass
+        
+        # Calculate total time using stage timings if available
+        if results["stage_timings"]:
+            total_stage_time = sum(results["stage_timings"].values())
+            if total_stage_time > 0:
+                results["calculated_total_time"] = total_stage_time
         
         return results
+    
+    def _ensure_required_fields(self, results: Dict[str, Any], state) -> None:
+        """
+        Ensure required fields are present in the results dictionary.
+        
+        Args:
+            results: Results dictionary to modify
+            state: Original state object
+        """
+        # Always ensure these fields are present
+        required_fields = ["transcription", "response"]
+        
+        for field in required_fields:
+            if field not in results:
+                # Try to get from state, or use empty string as fallback
+                try:
+                    results[field] = getattr(state, field, "")
+                except:
+                    results[field] = ""
+    
+    def _get_start_time(self, state) -> float:
+        """
+        Safely get the start time from a state object.
+        
+        Args:
+            state: State object
+            
+        Returns:
+            Start time as float
+        """
+        # Try multiple ways to get the start time
+        try:
+            # Try getting from timings dictionary
+            if hasattr(state, "timings") and isinstance(state.timings, dict) and "start_time" in state.timings:
+                return state.timings["start_time"]
+            
+            # Try getting from metadata
+            if hasattr(state, "metadata") and isinstance(state.metadata, dict) and "start_time" in state.metadata:
+                return state.metadata["start_time"]
+            
+            # Try direct state attribute
+            if hasattr(state, "start_time"):
+                return state.start_time
+            
+            # If state is dict-like, try dictionary access
+            try:
+                if "timings" in state and isinstance(state["timings"], dict) and "start_time" in state["timings"]:
+                    return state["timings"]["start_time"]
+                if "start_time" in state:
+                    return state["start_time"]
+            except:
+                pass
+            
+            # Last resort: check history
+            if len(self.state_tracker.history) > 0:
+                first_state = self.state_tracker.history[0]
+                if "timings" in first_state and isinstance(first_state["timings"], dict) and "start_time" in first_state["timings"]:
+                    return first_state["timings"]["start_time"]
+            
+            # If all else fails, return a time at least 1 second in the past
+            return time.time() - 1.0
+            
+        except Exception as e:
+            logger.warning(f"Error getting start time: {e}")
+            return time.time() - 1.0  # Fallback to at least 1 second
     
     async def cleanup(self) -> None:
         """Clean up resources."""

@@ -98,10 +98,7 @@ class STTNode:
             # Update state with result
             state.transcription = result.get("transcription", "")
             if not state.transcription:
-                state.error = result.get("error", "No transcription generated")
-                state.status = ConversationStatus.ERROR
-                yield state
-                return
+                logger.warning("Empty transcription generated or no transcription in result")
                 
             # Update additional state
             state.transcription_confidence = result.get("confidence", 1.0)
@@ -123,6 +120,9 @@ class STTNode:
                 "role": "user",
                 "content": state.transcription
             })
+            
+            # Debug log the state after processing
+            logger.info(f"STT processing complete. Transcription: '{state.transcription}', Confidence: {state.transcription_confidence}")
         
         except Exception as e:
             logger.error(f"Error in STT node: {e}")

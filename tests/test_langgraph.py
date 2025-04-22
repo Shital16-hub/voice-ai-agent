@@ -8,6 +8,7 @@ import logging
 import argparse
 from pathlib import Path
 import sys
+import json
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -106,12 +107,36 @@ async def test_langgraph_agent(args):
     # Print results
     print("\n=== LangGraph Results ===")
     
-    if "error" in result:
+    if "error" in result and result["error"]:
         print(f"Error: {result['error']}")
         return
     
-    print(f"Transcription: {result['transcription']}")
-    print(f"Response: {result['response']}")
+    # Safely access transcription
+    if "transcription" in result:
+        print(f"Transcription: {result['transcription']}")
+    else:
+        print("Transcription: Not available in results")
+        
+        # Try to get transcription from the state history if saved
+        if args.output_dir and config.save_state_history:
+            print("Checking state history for transcription...")
+            state_history_path = os.path.join(args.output_dir, "state_history.json")
+            if os.path.exists(state_history_path):
+                try:
+                    with open(state_history_path, 'r') as f:
+                        state_history = json.load(f)
+                        for state in state_history:
+                            if 'transcription' in state and state['transcription']:
+                                print(f"Found transcription in state history: {state['transcription']}")
+                                break
+                except Exception as e:
+                    print(f"Error reading state history: {e}")
+    
+    # Safely access response
+    if "response" in result:
+        print(f"Response: {result['response']}")
+    else:
+        print("Response: Not available in results")
     
     # Print timing information
     print("\n=== Timing Information ===")
@@ -125,6 +150,14 @@ async def test_langgraph_agent(args):
     print(f"\nGenerated speech audio saved to: {output_speech_file}")
     if "speech_audio_size" in result:
         print(f"Audio size: {result['speech_audio_size']} bytes")
+    
+    # Print state tracker summary if available
+    if hasattr(langgraph_agent, 'state_tracker'):
+        summary = langgraph_agent.state_tracker.get_summary()
+        print("\n=== State Tracking Summary ===")
+        print(f"Transcriptions: {summary.get('transcriptions', [])}")
+        print(f"Responses: {summary.get('responses', [])}")
+        print(f"Number of turns: {summary.get('num_turns', 0)}")
     
     # Clean up
     await langgraph_agent.cleanup()

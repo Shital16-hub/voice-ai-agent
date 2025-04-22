@@ -172,26 +172,143 @@ class StateTracker:
         self.history = []
         self.save_path = save_path
     
-    def add_state(self, state: AgentState) -> None:
+    def add_state(self, state) -> None:
         """
         Add a state to the history.
         
         Args:
-            state: Agent state to add
+            state: Agent state to add (could be any state object type)
         """
-        # Create a copy to avoid reference issues
-        state_dict = state.dict()
-        self.history.append(state_dict)
+        try:
+            # Create a dictionary representation of the state
+            if hasattr(state, 'dict') and callable(getattr(state, 'dict')):
+                # For Pydantic models
+                state_dict = state.dict()
+            elif hasattr(state, 'to_dict') and callable(getattr(state, 'to_dict')):
+                # For objects with to_dict method
+                state_dict = state.to_dict()
+            elif hasattr(state, 'model_dump') and callable(getattr(state, 'model_dump')):
+                # For newer Pydantic models
+                state_dict = state.model_dump()
+            elif hasattr(state, '__dict__'):
+                # For objects with __dict__
+                state_dict = state.__dict__.copy()
+            else:
+                # For dict-like objects
+                try:
+                    state_dict = dict(state)
+                except:
+                    # Last resort, create a minimal dictionary
+                    state_dict = {"timestamp": time.time()}
+            
+            # Extract essential fields
+            self._extract_essential_fields(state, state_dict)
+            
+            # Add to history
+            self.history.append(state_dict)
+            
+            # Debug log
+            self._log_state_addition(state)
+                
+        except Exception as e:
+            logger.warning(f"Failed to add state to history: {e}")
+            # Add minimal state info as fallback
+            try:
+                minimal_state = {"timestamp": time.time()}
+                self._extract_essential_fields(state, minimal_state)
+                self.history.append(minimal_state)
+            except Exception:
+                logger.warning("Failed to add even minimal state info")
+    
+    def _extract_essential_fields(self, state, state_dict: Dict[str, Any]) -> None:
+        """
+        Extract essential fields from the state object to the state dictionary.
+        
+        Args:
+            state: Original state object
+            state_dict: State dictionary to update
+        """
+        # Key fields to extract for debugging and analysis
+        essential_fields = [
+            "transcription", "response", "error", "current_node", "next_node", 
+            "status", "conversation_id"
+        ]
+        
+        for field in essential_fields:
+            try:
+                if hasattr(state, field):
+                    value = getattr(state, field)
+                    if field not in state_dict or state_dict[field] is None:
+                        state_dict[f"{field}_debug"] = str(value)
+            except Exception:
+                pass
+        
+        # Extract timing information
+        try:
+            if hasattr(state, "timings"):
+                timings = getattr(state, "timings")
+                if isinstance(timings, dict):
+                    # If timings is already in the state_dict, merge them
+                    if "timings" not in state_dict:
+                        state_dict["timings"] = {}
+                    
+                    for key, value in timings.items():
+                        state_dict["timings"][key] = value
+                        
+                    # Ensure start_time exists
+                    if "start_time" not in state_dict["timings"]:
+                        state_dict["timings"]["start_time"] = time.time()
+        except Exception:
+            # Ensure timings exists with at least start_time
+            if "timings" not in state_dict:
+                state_dict["timings"] = {"start_time": time.time()}
+    
+    def _log_state_addition(self, state) -> None:
+        """
+        Log information about the added state.
+        
+        Args:
+            state: State object that was added
+        """
+        try:
+            current_node = getattr(state, 'current_node', None)
+            next_node = getattr(state, 'next_node', None)
+            logger.debug(f"Added state to history: {current_node} -> {next_node}")
+        except Exception:
+            logger.debug("Added state to history (no node info available)")
     
     async def save_history(self) -> None:
         """Save the state history to a file if save_path is set."""
         if not self.save_path:
             return
         
-        os.makedirs(os.path.dirname(os.path.abspath(self.save_path)), exist_ok=True)
-        
-        with open(self.save_path, "w") as f:
-            json.dump(self.history, f, indent=2, default=str)
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(self.save_path)), exist_ok=True)
+            
+            # Process binary data for serialization
+            processed_history = []
+            for state in self.history:
+                processed_state = {}
+                for key, value in state.items():
+                    if key in ['audio_input', 'speech_output']:
+                        if value is not None:
+                            # For binary data, just store metadata
+                            try:
+                                processed_state[key + '_info'] = f"Binary data of length {len(value) if hasattr(value, '__len__') else 'unknown'}"
+                            except:
+                                processed_state[key + '_info'] = "Binary data (details unavailable)"
+                    else:
+                        # For other fields, store the value
+                        processed_state[key] = value
+                processed_history.append(processed_state)
+            
+            # Write to file
+            with open(self.save_path, "w") as f:
+                json.dump(processed_history, f, indent=2, default=str)
+                
+            logger.info(f"Saved state history to {self.save_path}")
+        except Exception as e:
+            logger.warning(f"Error saving state history: {e}")
     
     def get_summary(self) -> Dict[str, Any]:
         """
@@ -203,15 +320,77 @@ class StateTracker:
         if not self.history:
             return {"error": "No history available"}
         
-        first_state = self.history[0]
-        last_state = self.history[-1]
+        try:
+            first_state = self.history[0]
+            last_state = self.history[-1]
+            
+            # Extract specific information for summary
+            transcriptions = []
+            responses = []
+            
+            # Look for transcriptions and responses in various fields
+            for state in self.history:
+                for key in state:
+                    if 'transcription' in key.lower() and state[key]:
+                        if state[key] not in transcriptions and state[key] != 'None':
+                            transcriptions.append(state[key])
+                    
+                    if 'response' in key.lower() and state[key]:
+                        if state[key] not in responses and state[key] != 'None':
+                            responses.append(state[key])
+            
+            # Get timing information
+            start_time = None
+            if isinstance(first_state.get("timings"), dict) and "start_time" in first_state["timings"]:
+                start_time = first_state["timings"]["start_time"]
+            elif "timestamp" in first_state:
+                start_time = first_state["timestamp"]
+            
+            # Calculate duration
+            duration = 0
+            if start_time:
+                duration = time.time() - start_time
+            
+            # Build summary
+            return {
+                "conversation_id": first_state.get("conversation_id", "unknown"),
+                "start_time": start_time,
+                "end_time": time.time(),
+                "duration": duration,
+                "status": last_state.get("status", "unknown"),
+                "num_turns": len([s for s in self.history if s.get("current_node") == "STT"]),
+                "transcriptions": transcriptions,
+                "responses": responses,
+                "state_count": len(self.history)
+            }
+        except Exception as e:
+            logger.warning(f"Error generating summary: {e}")
+            return {
+                "error": f"Error generating summary: {str(e)}",
+                "num_states": len(self.history)
+            }
+    
+    def _calculate_duration(self, first_state: Dict[str, Any]) -> float:
+        """
+        Calculate the conversation duration.
         
-        return {
-            "conversation_id": first_state.get("conversation_id"),
-            "start_time": first_state.get("timings", {}).get("start_time"),
-            "end_time": time.time(),
-            "duration": time.time() - first_state.get("timings", {}).get("start_time", time.time()),
-            "status": last_state.get("status"),
-            "num_turns": len([s for s in self.history if s.get("current_node") == "STT"]),
-            "final_state": last_state
-        }
+        Args:
+            first_state: First state in the history
+            
+        Returns:
+            Duration in seconds
+        """
+        try:
+            start_time = None
+            
+            # Try to get start time from timings
+            if isinstance(first_state.get("timings"), dict):
+                start_time = first_state["timings"].get("start_time")
+            
+            # If no start time found, use timestamp or current time
+            if start_time is None:
+                start_time = first_state.get("timestamp", time.time())
+            
+            return time.time() - start_time
+        except Exception:
+            return 0.0
